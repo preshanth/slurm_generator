@@ -1,0 +1,164 @@
+# LibRA Slurm Pipeline Configuration
+#
+# Available Partitions:
+# - scavenger: 7 days, preemptible, low priority
+# - general-short: 4 hours, non-preemptible
+# - general-long: 7 days, non-preemptible (CPU only)
+# - general-long-gpu: 7 days, non-preemptible (GPU nodes)
+# - general-long-bigmem: 7 days, high memory nodes
+#
+# Available GPU Architectures:
+# - v100: 8 GPUs/node (nvl nodes) - Volta 70
+# - v100s: 4 GPUs/node (nvf nodes) - Volta with more memory
+# - a100: 4 GPUs/node (nal, nif nodes) - Ampere 80
+# - h200: 4-8 GPUs/node (neh, nfh nodes) - Hopper, latest
+# - l40s: 8 GPUs/node (nel nodes) - Ada Lovelace
+# - gh200: 1 GPU/node (nch nodes) - Grace-Hopper superchip
+
+pipeline:
+  n_iterations: 3                    # Number of major cycle iterations
+  output_dir: "./pipeline_output"    # Directory for final image products
+  work_dir: "./pipeline_work"        # Directory for slurm scripts and logs
+  validate_paths: true              # Validate binary/data paths (set false for local script generation)
+
+environment:
+  # Option 1: Use same binaries/libs for GPU and CPU jobs
+  bin_dir: ""                        # Path to executables (roadrunner-x, dale-x, hummbee-x)
+  lib_dir: ""                        # Path to shared libraries
+  casapath: ""                       # Path to CASA data repository (required)
+
+  # Option 2: Use separate GPU/CPU binaries (for arch-specific builds)
+  bin_dir_gpu: ""                    # GPU-specific binaries (optional, overrides bin_dir)
+  lib_dir_gpu: ""                    # GPU-specific libraries (optional, overrides lib_dir)
+  bin_dir_cpu: ""                    # CPU-specific binaries (optional, overrides bin_dir)
+  lib_dir_cpu: ""                    # CPU-specific libraries (optional, overrides lib_dir)
+
+slurm:
+  gpu:
+    partition: "general-short"       # Partition for GPU jobs (see list above)
+    nodes: 1                         # Nodes per GPU job
+    ntasks_per_node: 1               # Tasks per node
+    gpus_per_node: 1                 # GPUs to request per node
+    gpu_arch: "v100"                 # GPU architecture (v100, v100s, a100, h200, l40s, gh200)
+    time: "02:00:00"                 # Wall time (HH:MM:SS or D-HH:MM:SS)
+    mem: "64G"                       # Memory per node
+
+  cpu:
+    partition: "general-short"       # Partition for CPU jobs
+    nodes: 1                         # Nodes per CPU job
+    ntasks_per_node: 1               # Tasks per node
+    time: "01:00:00"                 # Wall time
+    mem: "32G"                       # Memory per node
+
+  account: ""                        # Slurm account for charging (optional)
+  qos: ""                            # Quality of service (optional)
+  email: ""                          # Email for job notifications (optional)
+  mail_type: "END,FAIL"              # When to send email: END,FAIL or ALL or BEGIN,END,FAIL
+
+data:
+  vis: ""                            # Path to measurement set (required)
+  imagename_base: "test_image"       # Base name for output images
+
+coyote:
+  enabled: false                     # Enable CF generation and filling (optional)
+
+  # CF Generation (single CPU job)
+  generate:
+    partition: "general-short"       # Partition for CF generation
+    time: "00:30:00"                 # Wall time for generation
+    mem: "8G"                        # Memory for generation
+
+  # CF Filling (parallel array job)
+  fillcf:
+    partition: "general-short"       # Partition for CF filling
+    nprocs: 40                       # Number of parallel array tasks
+    time: "01:00:00"                 # Wall time per fillcf task
+    mem: "4G"                        # Memory per fillcf task
+
+  # Coyote parameters
+  telescope: "EVLA"                  # Telescope name
+  imsize: 0                          # Image size (0 = use roadrunner imsize)
+  cell: 0.0                          # Cell size (0 = use roadrunner cell)
+  stokes: "I"                        # Stokes parameters
+  reffreq: ""                        # Reference frequency (empty = use roadrunner reffreq)
+  phasecenter: ""                    # Phase center (empty = use roadrunner phasecenter)
+  wplanes: 1                         # W-projection planes
+  cfcache: ""                        # CF cache directory (required if enabled)
+  wbawp: true                        # Wide-band A-projection
+  aterm: true                        # A-term correction
+  psterm: false                      # PS-term correction
+  conjbeams: true                    # Conjugate beams
+  muellertype: "diagonal"            # Mueller matrix type: diagonal, full
+  dpa: 360                           # Delta parallactic angle (degrees)
+  field: ""                          # Field selection (empty = use roadrunner field)
+  spw: "*"                           # SPW selection (empty = use roadrunner spw)
+  buffersize: 0                      # Buffer size (0 = auto)
+  oversampling: 20                   # CF oversampling factor
+
+roadrunner:
+  # Data selection
+  datacolumn: "data"                 # Options: data, model, corrected
+  field: ""                          # Field selection (e.g., "0" or "3C286")
+  spw: "*"                           # Spectral window selection (e.g., "0~3" or "*")
+  uvrange: ""                        # UV range selection (e.g., ">1klambda")
+
+  # Image definition
+  imsize: 1024                       # Image size in pixels (e.g., 2048 for production, 512 for testing)
+  cell: 1.0                          # Cell size in arcseconds (e.g., 0.5 for high-res VLA)
+  stokes: "I"                        # Stokes parameters (I or IV)
+  phasecenter: ""                    # Phase center (required, e.g., "J2000 19h59m28.5s +40d44m01.5s")
+  reffreq: "3.0e9"                   # Reference frequency in Hz
+
+  # Weighting
+  weighting: "briggs"                # Options: natural, uniform, briggs
+  rmode: "norm"                      # Robustness mode: abs, norm, none
+  robust: 0.0                        # Briggs robustness (-2=uniform, 0=moderate, 2=natural)
+
+  # Gridding
+  gridder: "awphpg"                  # Options: awphpg (GPU), awproject (CPU)
+  wprojplanes: 1                     # Number of w-projection planes (e.g., 128 for wide-field)
+  cfcache: ""                        # Path to convolution function cache (required)
+  wbawp: true                        # Wide-band A-projection
+
+  # Advanced
+  mode: "residual"                   # Options: weight, psf, snrpsf, residual, predict
+  sowimageext: ""                    # Sum-of-weights image extension (optional)
+  complexgrid: ""                    # Complex grid output (optional)
+  pbcor: true                        # Primary beam correction
+  conjbeams: true                    # Use conjugate beams
+  pblimit: 0.001                     # Primary beam gain limit
+  usepointing: false                 # Use pointing table
+  pointingoffsetsigdev: [300, 300]   # Pointing offset sigma (arcsec)
+
+dale:
+  pblimit: 0.2                       # Primary beam cutoff for normalization
+  computepb: false                   # Compute primary beam
+
+hummbee:
+  # Deconvolution algorithm
+  deconvolver: "hogbom"              # Options: hogbom, clark, multiscale, mtmfs, asp
+  nterms: 1                          # Taylor terms for mtmfs (1 for non-wideband)
+
+  # Stopping criteria
+  gain: 0.1                          # Loop gain (0.1 = conservative, 0.3 = aggressive)
+  threshold: 0.0                     # Absolute threshold in Jy (0 = no threshold)
+  nsigma: 0.0                        # Threshold in sigma (0 = disabled, requires .pb file)
+  cycleniter: 1000                   # Max iterations per major cycle (-1 = unlimited)
+  cyclefactor: 1.0                   # Threshold increase factor between major cycles
+
+  # Multiscale options (for deconvolver: multiscale)
+  scales: []                         # Scale sizes in pixels (e.g., [0, 5, 15, 45])
+
+  # ASP options (for deconvolver: asp)
+  largestscale: -1                   # Largest scale in pixels (-1 = auto)
+  fusedthreshold: 0                  # Fused threshold for ASP
+
+  # Masking
+  mask: []                           # Clean mask(s) (e.g., ["region.crtf"] or [])
+
+  # Spectral mode
+  specmode: "mfs"                    # Options: mfs, cube, cubedata, cubesource
+
+  # Advanced
+  pbcor: false                       # Primary beam correction on output
+  mode: "deconvolve"                 # Options: deconvolve, restore
