@@ -312,7 +312,12 @@ echo "Finished {job_name} at $(date)"
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
 
         submit_script_path = self.work_dir / "submit_pipeline.sh"
+        job_ids_file = self.work_dir / ".pipeline_job_ids"
         submit_lines = ["#!/bin/bash --login", "", "set -e", ""]
+        submit_lines.append(f"# Track all submitted job IDs for cancellation")
+        submit_lines.append(f"JOBIDS_FILE={job_ids_file}")
+        submit_lines.append(f"echo '' > $JOBIDS_FILE")
+        submit_lines.append("")
 
         initial_dependency = None
 
@@ -322,11 +327,13 @@ echo "Finished {job_name} at $(date)"
             submit_lines.append(f"cfgen_id=$(sbatch --parsable {cfgen_script})")
             submit_lines.append('if [ -z "$cfgen_id" ]; then echo "ERROR: CF generation job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF generation job: $cfgen_id\"")
+            submit_lines.append("echo $cfgen_id >> $JOBIDS_FILE")
 
             fillcf_script = self.generate_coyote_fillcf_job()
             submit_lines.append(f"fillcf_id=$(sbatch --parsable --dependency=afterok:$cfgen_id {fillcf_script})")
             submit_lines.append('if [ -z "$fillcf_id" ]; then echo "ERROR: CF filling job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF filling array job: $fillcf_id\"")
+            submit_lines.append("echo $fillcf_id >> $JOBIDS_FILE")
             submit_lines.append("")
 
             initial_dependency = "$fillcf_id"
@@ -352,6 +359,7 @@ echo "Finished {job_name} at $(date)"
 
                 submit_lines.append(f"{job_var}=$(sbatch --parsable {dep_flag} {script})")
                 submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
+                submit_lines.append(f"echo ${job_var} >> $JOBIDS_FILE")
                 gpu_job_ids.append(f"${job_var}")
 
             cpu_script = self.generate_cpu_job(iteration)
@@ -359,6 +367,7 @@ echo "Finished {job_name} at $(date)"
             cpu_dep_str = ":".join(gpu_job_ids)
             submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable --dependency=afterok:{cpu_dep_str} {cpu_script})")
             submit_lines.append(f'if [ -z "${cpu_job_var}" ]; then echo "ERROR: {cpu_job_var} submission failed"; exit 1; fi')
+            submit_lines.append(f"echo ${cpu_job_var} >> $JOBIDS_FILE")
             submit_lines.append("")
 
         submit_lines.append("echo \"Pipeline submitted successfully\"")
@@ -367,9 +376,38 @@ echo "Finished {job_name} at $(date)"
             f.write("\n".join(submit_lines))
         submit_script_path.chmod(0o755)
 
+        # Generate cancel script
+        cancel_script_path = self.work_dir / "cancel_pipeline.sh"
+        cancel_lines = [
+            "#!/bin/bash --login",
+            "",
+            f"JOBIDS_FILE={job_ids_file}",
+            "",
+            "if [ ! -f \"$JOBIDS_FILE\" ]; then",
+            "    echo \"No job IDs file found. Pipeline may not have been submitted yet.\"",
+            "    exit 1",
+            "fi",
+            "",
+            "echo \"Cancelling all pipeline jobs...\"",
+            "while IFS= read -r jobid; do",
+            "    if [ ! -z \"$jobid\" ]; then",
+            "        echo \"Cancelling job $jobid\"",
+            "        scancel $jobid",
+            "    fi",
+            "done < \"$JOBIDS_FILE\"",
+            "",
+            "echo \"All pipeline jobs cancelled\"",
+            "rm -f \"$JOBIDS_FILE\"",
+        ]
+
+        with open(cancel_script_path, 'w') as f:
+            f.write("\n".join(cancel_lines))
+        cancel_script_path.chmod(0o755)
+
         print(f"Generated slurm scripts in: {self.scripts_dir}")
         print(f"Log files will be in: {self.log_dir}")
         print(f"To submit pipeline: {submit_script_path}")
+        print(f"To cancel pipeline: {cancel_script_path}")
         if self.config.is_coyote_enabled():
             print(f"Coyote CF generation and filling enabled")
 
