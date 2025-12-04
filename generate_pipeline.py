@@ -122,7 +122,7 @@ class SlurmJobGenerator:
 
         return script_path
 
-    def generate_coyote_fillcf_job(self, dependency: str = None) -> Path:
+    def generate_coyote_fillcf_job(self) -> Path:
         job_name = "libra_fillcf"
         log_file = self.log_dir / f"{job_name}_%A_%a.log"
         script_path = self.scripts_dir / f"{job_name}.sh"
@@ -143,9 +143,6 @@ class SlurmJobGenerator:
             f"#SBATCH --mem={fillcf_cfg['mem']}",
             f"#SBATCH --output={log_file}",
         ]
-
-        if dependency:
-            lines.append(f"#SBATCH --dependency=afterok:{dependency}")
 
         if slurm_cfg['account']:
             lines.append(f"#SBATCH --account={slurm_cfg['account']}")
@@ -241,16 +238,12 @@ if __name__ == "__main__":
             f.write(worker_content)
         worker_path.chmod(0o755)
 
-    def generate_gpu_job(self, iteration: int, mode: str, dependencies: list = None) -> Path:
+    def generate_gpu_job(self, iteration: int, mode: str) -> Path:
         job_name = f"libra_iter{iteration}_{mode}"
         log_file = self.log_dir / f"{job_name}_%j.log"
         script_path = self.scripts_dir / f"{job_name}.sh"
 
         header = self._generate_sbatch_header(job_name, 'gpu', str(log_file))
-
-        if dependencies:
-            dep_str = ":".join(dependencies)
-            header += f"#SBATCH --dependency=afterok:{dep_str}\n\n"
 
         env_setup = self._generate_env_setup('gpu')
         bin_dir = self._get_bin_dir('gpu')
@@ -268,15 +261,12 @@ if __name__ == "__main__":
 
         return script_path
 
-    def generate_cpu_job(self, iteration: int, dependencies: list) -> Path:
+    def generate_cpu_job(self, iteration: int) -> Path:
         job_name = f"libra_iter{iteration}_deconv"
         log_file = self.log_dir / f"{job_name}_%j.log"
         script_path = self.scripts_dir / f"{job_name}.sh"
 
         header = self._generate_sbatch_header(job_name, 'cpu', str(log_file))
-
-        dep_str = ":".join(dependencies)
-        header += f"#SBATCH --dependency=afterok:{dep_str}\n\n"
 
         env_setup = self._generate_env_setup('cpu')
         bin_dir = self._get_bin_dir('cpu')
@@ -333,8 +323,8 @@ echo "Finished {job_name} at $(date)"
             submit_lines.append('if [ -z "$cfgen_id" ]; then echo "ERROR: CF generation job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF generation job: $cfgen_id\"")
 
-            fillcf_script = self.generate_coyote_fillcf_job(dependency="$cfgen_id")
-            submit_lines.append(f"fillcf_id=$(sbatch --parsable {fillcf_script})")
+            fillcf_script = self.generate_coyote_fillcf_job()
+            submit_lines.append(f"fillcf_id=$(sbatch --parsable --dependency=afterok:$cfgen_id {fillcf_script})")
             submit_lines.append('if [ -z "$fillcf_id" ]; then echo "ERROR: CF filling job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF filling array job: $fillcf_id\"")
             submit_lines.append("")
@@ -350,21 +340,24 @@ echo "Finished {job_name} at $(date)"
             modes = ["residual", "psf", "weight"] if iteration == 0 else ["residual"]
 
             for mode in modes:
-                deps = None
-                if iteration == 0 and initial_dependency:
-                    deps = [initial_dependency]
-                elif iteration > 0:
-                    deps = [f"$iter{iteration-1}_deconv_id"]
-
-                script = self.generate_gpu_job(iteration, mode, deps)
+                script = self.generate_gpu_job(iteration, mode)
                 job_var = f"iter{iteration}_{mode}_id"
-                submit_lines.append(f"{job_var}=$(sbatch --parsable {script})")
+
+                # Build dependency string for sbatch command
+                dep_flag = ""
+                if iteration == 0 and initial_dependency:
+                    dep_flag = f"--dependency=afterok:{initial_dependency}"
+                elif iteration > 0:
+                    dep_flag = f"--dependency=afterok:$iter{iteration-1}_deconv_id"
+
+                submit_lines.append(f"{job_var}=$(sbatch --parsable {dep_flag} {script})")
                 submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
                 gpu_job_ids.append(f"${job_var}")
 
-            cpu_script = self.generate_cpu_job(iteration, gpu_job_ids)
+            cpu_script = self.generate_cpu_job(iteration)
             cpu_job_var = f"iter{iteration}_deconv_id"
-            submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable {cpu_script})")
+            cpu_dep_str = ":".join(gpu_job_ids)
+            submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable --dependency=afterok:{cpu_dep_str} {cpu_script})")
             submit_lines.append(f'if [ -z "${cpu_job_var}" ]; then echo "ERROR: {cpu_job_var} submission failed"; exit 1; fi')
             submit_lines.append("")
 
