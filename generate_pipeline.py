@@ -48,7 +48,7 @@ class SlurmJobGenerator:
         type_cfg = slurm_cfg[job_type]
 
         lines = [
-            "#!/bin/bash",
+            "#!/bin/bash --login",
             f"#SBATCH --job-name={job_name}",
             f"#SBATCH --partition={type_cfg['partition']}",
             f"#SBATCH --nodes={type_cfg['nodes']}",
@@ -85,7 +85,7 @@ class SlurmJobGenerator:
         slurm_cfg = self.config.config['slurm']
 
         lines = [
-            "#!/bin/bash",
+            "#!/bin/bash --login",
             f"#SBATCH --job-name={job_name}",
             f"#SBATCH --partition={coy_cfg['partition']}",
             f"#SBATCH --nodes=1",
@@ -133,7 +133,7 @@ class SlurmJobGenerator:
         nprocs = fillcf_cfg['nprocs']
 
         lines = [
-            "#!/bin/bash",
+            "#!/bin/bash --login",
             f"#SBATCH --job-name={job_name}",
             f"#SBATCH --partition={fillcf_cfg['partition']}",
             f"#SBATCH --array=0-{nprocs-1}",
@@ -255,7 +255,7 @@ if __name__ == "__main__":
         env_setup = self._generate_env_setup('gpu')
         bin_dir = self._get_bin_dir('gpu')
 
-        cmd = self.config.build_roadrunner_cmd(iteration, mode, mode)
+        cmd = self.config.build_roadrunner_cmd(iteration, mode)
         cmd[0] = str(bin_dir / cmd[0])
         cmd_str = " ".join(cmd)
 
@@ -283,21 +283,25 @@ if __name__ == "__main__":
 
         imagename = self.config.get_imagename(iteration)
 
-        dale_psf_cmd = self.config.build_dale_cmd(iteration, "psf")
-        dale_psf_cmd[0] = str(bin_dir / dale_psf_cmd[0])
-
         dale_residual_cmd = self.config.build_dale_cmd(iteration, "residual")
         dale_residual_cmd[0] = str(bin_dir / dale_residual_cmd[0])
 
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
         hummbee_cmd[0] = str(bin_dir / hummbee_cmd[0])
 
-        script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
-
-echo "Normalizing PSF..."
+        # Only normalize PSF in iteration 0
+        psf_normalization = ""
+        if iteration == 0:
+            dale_psf_cmd = self.config.build_dale_cmd(iteration, "psf")
+            dale_psf_cmd[0] = str(bin_dir / dale_psf_cmd[0])
+            psf_normalization = f"""echo "Normalizing PSF..."
 {' '.join(dale_psf_cmd)}
 
-echo "Normalizing residual..."
+"""
+
+        script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
+
+{psf_normalization}echo "Normalizing residual..."
 {' '.join(dale_residual_cmd)}
 
 echo "Running deconvolution..."
@@ -318,7 +322,7 @@ echo "Finished {job_name} at $(date)"
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
 
         submit_script_path = self.work_dir / "submit_pipeline.sh"
-        submit_lines = ["#!/bin/bash", ""]
+        submit_lines = ["#!/bin/bash --login", "", "set -e", ""]
 
         initial_dependency = None
 
@@ -326,10 +330,12 @@ echo "Finished {job_name} at $(date)"
             submit_lines.append("# Coyote CF generation and filling")
             cfgen_script = self.generate_coyote_cfgen_job()
             submit_lines.append(f"cfgen_id=$(sbatch --parsable {cfgen_script})")
+            submit_lines.append('if [ -z "$cfgen_id" ]; then echo "ERROR: CF generation job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF generation job: $cfgen_id\"")
 
             fillcf_script = self.generate_coyote_fillcf_job(dependency="$cfgen_id")
             submit_lines.append(f"fillcf_id=$(sbatch --parsable {fillcf_script})")
+            submit_lines.append('if [ -z "$fillcf_id" ]; then echo "ERROR: CF filling job submission failed"; exit 1; fi')
             submit_lines.append("echo \"Submitted CF filling array job: $fillcf_id\"")
             submit_lines.append("")
 
@@ -339,7 +345,11 @@ echo "Finished {job_name} at $(date)"
         for iteration in range(self.config.get_n_iterations()):
             gpu_job_ids = []
 
-            for mode in ["residual", "psf", "weight"]:
+            # Iteration 0: compute residual, PSF, weight
+            # Iterations 1+: only compute residual (PSF and weight don't change)
+            modes = ["residual", "psf", "weight"] if iteration == 0 else ["residual"]
+
+            for mode in modes:
                 deps = None
                 if iteration == 0 and initial_dependency:
                     deps = [initial_dependency]
@@ -349,11 +359,13 @@ echo "Finished {job_name} at $(date)"
                 script = self.generate_gpu_job(iteration, mode, deps)
                 job_var = f"iter{iteration}_{mode}_id"
                 submit_lines.append(f"{job_var}=$(sbatch --parsable {script})")
+                submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
                 gpu_job_ids.append(f"${job_var}")
 
             cpu_script = self.generate_cpu_job(iteration, gpu_job_ids)
             cpu_job_var = f"iter{iteration}_deconv_id"
             submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable {cpu_script})")
+            submit_lines.append(f'if [ -z "${cpu_job_var}" ]; then echo "ERROR: {cpu_job_var} submission failed"; exit 1; fi')
             submit_lines.append("")
 
         submit_lines.append("echo \"Pipeline submitted successfully\"")

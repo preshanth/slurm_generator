@@ -73,9 +73,9 @@ class ImagingConfig:
             return ""
         return f"{self.get_imagename_base()}_iter{iteration-1}.model"
 
-    def build_roadrunner_cmd(self, iteration: int, mode: str, output_suffix: str = "") -> List[str]:
+    def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
-        imagename = self.get_imagename(iteration, output_suffix)
+        imagename = self.get_imagename(iteration)
         modelimagename = self.get_modelimagename(iteration)
 
         cmd = [
@@ -115,6 +115,9 @@ class ImagingConfig:
         dale = self.config['dale']
         imagename = self.get_imagename(iteration)
 
+        # Always use iter0 weight for normalization
+        weightimage = f"{self.get_imagename_base()}_iter0.weight"
+
         cmd = [
             "dale",
             "help=noprompt",
@@ -125,8 +128,8 @@ class ImagingConfig:
         ]
 
         if imtype in ['residual', 'model']:
-            cmd.append(f"weightimage={imagename}.weight")
-            cmd.append(f"sowimage={imagename}.sumwt")
+            cmd.append(f"weightimage={weightimage}")
+            cmd.append(f"sowimage={self.get_imagename(0)}.sumwt")
 
         return cmd
 
