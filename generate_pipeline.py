@@ -187,8 +187,8 @@ echo "Finished CF filling task $SLURM_ARRAY_TASK_ID at $(date)"
 
         cmd_base = self.config.build_coyote_cmd('fillcf')
         cmd_base = [arg for arg in cmd_base if not arg.startswith('cflist=')]
-        # Skip the binary name (first element) and help flag (second element)
-        cmd_params_list = cmd_base[2:]
+        # Skip only the binary name, keep help=noprompt
+        cmd_params_list = cmd_base[1:]
 
         worker_content = f'''#!/usr/bin/env python3
 
