@@ -47,6 +47,12 @@ class ImagingConfig:
     def should_validate_paths(self) -> bool:
         return self.config['pipeline'].get('validate_paths', True)
 
+    def get_pipeline_stage(self) -> str:
+        stage = self.config['pipeline'].get('stage', 'full')
+        if stage not in ['cf_only', 'imaging_only', 'full']:
+            raise ValueError(f"Invalid pipeline stage: {stage}. Must be 'cf_only', 'imaging_only', or 'full'")
+        return stage
+
     def get_n_iterations(self) -> int:
         return self.config['pipeline']['n_iterations']
 

@@ -20,6 +20,7 @@ pipeline:
   output_dir: "./pipeline_output"    # Directory for final image products
   work_dir: "./pipeline_work"        # Directory for slurm scripts and logs
   validate_paths: true              # Validate binary/data paths (set false for local script generation)
+  stage: "full"                      # Pipeline stage: "cf_only", "imaging_only", "full"
 
 environment:
   # Option 1: Use same binaries/libs for GPU and CPU jobs

@@ -234,15 +234,16 @@ def fill_cfs(cfs, cfcache_dir, coyote_bin, cmd_params):
 
     print(f"\\nExecuting command:")
     print(f"  {{' '.join(cmd)}}\\n")
+    print("=" * 80)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Don't capture output - let it stream directly to log
+    sys.stdout.flush()
+    sys.stderr.flush()
+    result = subprocess.run(cmd)
 
-    print(result.stdout)
-    if result.stderr:
-        print(f"STDERR: {{result.stderr}}", file=sys.stderr)
-
+    print("=" * 80)
     if result.returncode != 0:
-        print(f"ERROR: Command failed with return code {{result.returncode}}")
+        print(f"\\nERROR: Command failed with return code {{result.returncode}}")
         sys.exit(result.returncode)
 
     print(f"\\nSuccessfully filled {{len(cfs)}} CFs")
@@ -344,6 +345,35 @@ echo "Finished {job_name} at $(date)"
 
         return script_path
 
+    def _generate_cancel_script(self, job_ids_file: Path):
+        """Generate a cancel script for the pipeline"""
+        cancel_script_path = self.work_dir / "cancel_pipeline.sh"
+        cancel_lines = [
+            "#!/bin/bash --login",
+            "",
+            f"JOBIDS_FILE={job_ids_file}",
+            "",
+            "if [ ! -f \"$JOBIDS_FILE\" ]; then",
+            "    echo \"No job IDs file found. Pipeline may not have been submitted yet.\"",
+            "    exit 1",
+            "fi",
+            "",
+            "echo \"Cancelling all pipeline jobs...\"",
+            "while IFS= read -r jobid; do",
+            "    if [ ! -z \"$jobid\" ]; then",
+            "        echo \"Cancelling job $jobid\"",
+            "        scancel $jobid",
+            "    fi",
+            "done < \"$JOBIDS_FILE\"",
+            "",
+            "echo \"All pipeline jobs cancelled\"",
+            "rm -f \"$JOBIDS_FILE\"",
+        ]
+
+        with open(cancel_script_path, 'w') as f:
+            f.write("\n".join(cancel_lines))
+        cancel_script_path.chmod(0o755)
+
     def generate_full_pipeline(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -356,9 +386,11 @@ echo "Finished {job_name} at $(date)"
         submit_lines.append(f"echo '' > $JOBIDS_FILE")
         submit_lines.append("")
 
+        stage = self.config.get_pipeline_stage()
         initial_dependency = None
 
-        if self.config.is_coyote_enabled():
+        # CF generation/filling stage
+        if self.config.is_coyote_enabled() and stage in ['cf_only', 'full']:
             submit_lines.append("# Coyote CF generation and filling")
             cfgen_script = self.generate_coyote_cfgen_job()
             submit_lines.append(f"cfgen_id=$(sbatch --parsable {cfgen_script})")
@@ -375,7 +407,23 @@ echo "Finished {job_name} at $(date)"
 
             initial_dependency = "$fillcf_id"
 
-        submit_lines.append("# Imaging iterations")
+        # Stop here if cf_only
+        if stage == 'cf_only':
+            submit_lines.append("echo \"CF generation/filling pipeline submitted (cf_only mode)\"")
+            with open(submit_script_path, 'w') as f:
+                f.write("\n".join(submit_lines))
+            submit_script_path.chmod(0o755)
+            self._generate_cancel_script(job_ids_file)
+            print(f"Generated slurm scripts in: {self.scripts_dir}")
+            print(f"Log files will be in: {self.log_dir}")
+            print(f"To submit pipeline: {submit_script_path}")
+            print(f"To cancel pipeline: {self.work_dir}/cancel_pipeline.sh")
+            print(f"Pipeline stage: {stage}")
+            return
+
+        # Imaging iterations stage
+        if stage in ['imaging_only', 'full']:
+            submit_lines.append("# Imaging iterations")
         for iteration in range(self.config.get_n_iterations()):
             gpu_job_ids = []
 
@@ -413,38 +461,13 @@ echo "Finished {job_name} at $(date)"
             f.write("\n".join(submit_lines))
         submit_script_path.chmod(0o755)
 
-        # Generate cancel script
-        cancel_script_path = self.work_dir / "cancel_pipeline.sh"
-        cancel_lines = [
-            "#!/bin/bash --login",
-            "",
-            f"JOBIDS_FILE={job_ids_file}",
-            "",
-            "if [ ! -f \"$JOBIDS_FILE\" ]; then",
-            "    echo \"No job IDs file found. Pipeline may not have been submitted yet.\"",
-            "    exit 1",
-            "fi",
-            "",
-            "echo \"Cancelling all pipeline jobs...\"",
-            "while IFS= read -r jobid; do",
-            "    if [ ! -z \"$jobid\" ]; then",
-            "        echo \"Cancelling job $jobid\"",
-            "        scancel $jobid",
-            "    fi",
-            "done < \"$JOBIDS_FILE\"",
-            "",
-            "echo \"All pipeline jobs cancelled\"",
-            "rm -f \"$JOBIDS_FILE\"",
-        ]
-
-        with open(cancel_script_path, 'w') as f:
-            f.write("\n".join(cancel_lines))
-        cancel_script_path.chmod(0o755)
+        self._generate_cancel_script(job_ids_file)
 
         print(f"Generated slurm scripts in: {self.scripts_dir}")
         print(f"Log files will be in: {self.log_dir}")
         print(f"To submit pipeline: {submit_script_path}")
-        print(f"To cancel pipeline: {cancel_script_path}")
+        print(f"To cancel pipeline: {self.work_dir}/cancel_pipeline.sh")
+        print(f"Pipeline stage: {stage}")
         if self.config.is_coyote_enabled():
             print(f"Coyote CF generation and filling enabled")
 
