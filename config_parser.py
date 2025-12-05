@@ -51,6 +51,11 @@ class ImagingConfig:
         stage = self.config['pipeline'].get('stage', 'full')
         if stage not in ['cf_only', 'imaging_only', 'full']:
             raise ValueError(f"Invalid pipeline stage: {stage}. Must be 'cf_only', 'imaging_only', or 'full'")
+
+        # Validate stage compatibility
+        if stage == 'cf_only' and not self.is_coyote_enabled():
+            raise ValueError("stage='cf_only' requires coyote.enabled=true")
+
         return stage
 
     def get_n_iterations(self) -> int:
