@@ -4,10 +4,30 @@ import sys
 from pathlib import Path
 from config_parser import ImagingConfig
 
-def check_binary(bin_path: Path) -> bool:
-    return bin_path.exists() and bin_path.is_file()
+def check_casarc(casapath: Path) -> tuple[bool, str]:
+    """Check if ~/.casarc exists and has correct measures.directory"""
+    casarc = Path.home() / ".casarc"
+
+    if not casarc.exists():
+        return False, f"~/.casarc not found. Create with:\n  echo 'measures.directory: {casapath}' > ~/.casarc"
+
+    with open(casarc) as f:
+        content = f.read()
+
+    if 'measures.directory:' not in content:
+        return False, f"~/.casarc missing 'measures.directory:'. Add:\n  measures.directory: {casapath}"
+
+    # Extract the configured path
+    for line in content.split('\n'):
+        if 'measures.directory:' in line:
+            configured = line.split(':', 1)[1].strip()
+            if Path(configured) != casapath:
+                return False, f"~/.casarc has measures.directory: {configured}\n  Expected: {casapath}"
+
+    return True, str(casarc)
 
 def verify_environment(config: ImagingConfig) -> bool:
+    """Verify environment with clear reporting of what's being checked"""
     env = config.config['environment']
 
     bin_dir = Path(env['bin_dir'])
@@ -20,33 +40,35 @@ def verify_environment(config: ImagingConfig) -> bool:
 
     all_good = True
 
-    print("Checking directories...")
-    if not bin_dir.exists():
-        print(f"❌ Binary directory not found: {bin_dir}")
-        all_good = False
-    else:
-        print(f"✓ Binary directory: {bin_dir}")
+    print("Environment paths:")
+    print(f"  bin_dir: {bin_dir}")
+    print(f"  lib_dir: {lib_dir}")
+    print(f"  casapath: {casapath}")
 
-    if not lib_dir.exists():
-        print(f"❌ Library directory not found: {lib_dir}")
-        all_good = False
-    else:
-        print(f"✓ Library directory: {lib_dir}")
+    print("\nDirectory checks:")
+    for name, path in [("bin_dir", bin_dir), ("lib_dir", lib_dir), ("casapath", casapath)]:
+        if not path.exists():
+            print(f"  ❌ {name}: {path}")
+            all_good = False
+        else:
+            print(f"  ✓ {name}: {path}")
 
-    if not casapath.exists():
-        print(f"❌ CASAPATH not found: {casapath}")
-        all_good = False
-    else:
-        print(f"✓ CASAPATH: {casapath}")
-
-    print("\nChecking binaries...")
+    print("\nBinary checks:")
     for binary in required_bins:
         bin_path = bin_dir / binary
-        if check_binary(bin_path):
-            print(f"✓ {binary}")
+        if bin_path.exists() and bin_path.is_file():
+            print(f"  ✓ {binary}")
         else:
-            print(f"❌ {binary} not found at {bin_path}")
+            print(f"  ❌ {binary} not found")
             all_good = False
+
+    print("\nCASA configuration:")
+    casarc_ok, casarc_msg = check_casarc(casapath)
+    if casarc_ok:
+        print(f"  ✓ {casarc_msg}")
+    else:
+        print(f"  ⚠️  {casarc_msg}")
+        # Warning only, not fatal
 
     return all_good
 

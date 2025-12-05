@@ -472,11 +472,35 @@ echo "Finished {job_name} at $(date)"
             print(f"Coyote CF generation and filling enabled")
 
 
+def print_config_summary(config: ImagingConfig):
+    """Print concise summary of what will be generated"""
+    stage = config.get_pipeline_stage()
+    slurm = config.config['slurm']
+
+    print("Pipeline Configuration:")
+    print(f"  Stage: {stage}")
+    print(f"  Iterations: {config.get_n_iterations()}")
+    print(f"  Data: {config.get_vis()}")
+    print(f"  Output: {config.get_imagename_base()}")
+
+    print("\nResources:")
+    print(f"  GPU: {slurm['gpu']['partition']}, {slurm['gpu']['gpu_arch']}, {slurm['gpu']['gpus_per_node']} GPUs")
+    print(f"  CPU: {slurm['cpu']['partition']}")
+
+    if config.is_coyote_enabled():
+        coy = config.config['coyote']
+        print(f"\nCoyote CF:")
+        print(f"  Cache: {coy['cfcache']}")
+        print(f"  Parallel tasks: {coy['fillcf']['nprocs']}")
+
+    print()
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python generate_pipeline.py <config_file>")
         sys.exit(1)
 
     config = ImagingConfig(sys.argv[1])
+    print_config_summary(config)
     generator = SlurmJobGenerator(config)
     generator.generate_full_pipeline()
