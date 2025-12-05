@@ -187,7 +187,8 @@ echo "Finished CF filling task $SLURM_ARRAY_TASK_ID at $(date)"
 
         cmd_base = self.config.build_coyote_cmd('fillcf')
         cmd_base = [arg for arg in cmd_base if not arg.startswith('cflist=')]
-        cmd_params = ' '.join([f'"{arg}"' for arg in cmd_base[2:]])
+        # Skip the binary name (first element) and help flag (second element)
+        cmd_params_list = cmd_base[2:]
 
         worker_content = f'''#!/usr/bin/env python3
 
@@ -198,10 +199,14 @@ import subprocess
 import sys
 
 def distribute_cfs(cfcache_dir, nprocs, task_id):
-    cfs = sorted([os.path.basename(f) for f in glob.glob(os.path.join(cfcache_dir, 'CF*.im')) if os.path.isdir(f)])
+    # Look for all CF directories (broader pattern)
+    pattern = os.path.join(cfcache_dir, '*CF*.im')
+    cfs = sorted([os.path.basename(f) for f in glob.glob(pattern) if os.path.isdir(f)])
+
+    print(f"Task {{task_id}}: Found {{len(cfs)}} total CFs in {{cfcache_dir}}")
 
     if not cfs:
-        print(f"No CFs found in {{cfcache_dir}}")
+        print(f"ERROR: No CFs found matching {{pattern}}")
         sys.exit(1)
 
     base, remainder = divmod(len(cfs), nprocs)
@@ -210,20 +215,37 @@ def distribute_cfs(cfcache_dir, nprocs, task_id):
     start = sum(quantities[:task_id])
     end = start + quantities[task_id]
 
-    return cfs[start:end]
+    assigned = cfs[start:end]
+    print(f"Task {{task_id}}: Assigned {{len(assigned)}} CFs ({{start}} to {{end}})")
 
-def fill_cfs(cfs, cfcache_dir, coyote_bin):
+    return assigned
+
+def fill_cfs(cfs, cfcache_dir, coyote_bin, cmd_params):
     if not cfs:
         print("No CFs assigned to this task")
         return
 
     cflist = ",".join(cfs)
-    cmd = [coyote_bin] + {cmd_params}.split() + [f"cflist={{cflist}}"]
+    cmd = [coyote_bin] + cmd_params + [f"cflist={{cflist}}"]
 
-    print(f"Processing {{len(cfs)}} CFs: {{', '.join(cfs[:3])}}{{' ...' if len(cfs) > 3 else ''}}")
-    print(f"Command: {{' '.join(cmd)}}")
+    print(f"\\nProcessing {{len(cfs)}} CFs:")
+    for cf in cfs:
+        print(f"  - {{cf}}")
 
-    subprocess.run(cmd, check=True)
+    print(f"\\nExecuting command:")
+    print(f"  {{' '.join(cmd)}}\\n")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    print(result.stdout)
+    if result.stderr:
+        print(f"STDERR: {{result.stderr}}", file=sys.stderr)
+
+    if result.returncode != 0:
+        print(f"ERROR: Command failed with return code {{result.returncode}}")
+        sys.exit(result.returncode)
+
+    print(f"\\nSuccessfully filled {{len(cfs)}} CFs")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='CF filling worker')
@@ -234,8 +256,15 @@ if __name__ == "__main__":
 
     task_id = int(os.getenv('SLURM_ARRAY_TASK_ID', '0'))
 
+    # Command parameters passed from generator
+    cmd_params = {cmd_params_list}
+
+    print(f"\\n=== CF Filling Worker - Task {{task_id}} ===")
+    print(f"CF Cache: {{args.cfcache_dir}}")
+    print(f"Total processes: {{args.nprocs}}\\n")
+
     cfs = distribute_cfs(args.cfcache_dir, args.nprocs, task_id)
-    fill_cfs(cfs, args.cfcache_dir, args.coyote_bin)
+    fill_cfs(cfs, args.cfcache_dir, args.coyote_bin, cmd_params)
 '''
 
         worker_path.parent.mkdir(parents=True, exist_ok=True)
