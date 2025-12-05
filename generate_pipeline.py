@@ -2,6 +2,7 @@
 
 import sys
 import os
+import shlex
 from pathlib import Path
 from config_parser import ImagingConfig
 
@@ -11,6 +12,10 @@ class SlurmJobGenerator:
         self.work_dir = config.get_work_dir()
         self.log_dir = self.work_dir / "logs"
         self.scripts_dir = self.work_dir / "slurm_scripts"
+
+    def _quote_cmd(self, cmd: list) -> str:
+        """Properly quote command arguments that contain spaces or special chars"""
+        return " ".join(shlex.quote(arg) for arg in cmd)
 
     def _get_bin_dir(self, job_type: str) -> Path:
         env = self.config.config['environment']
@@ -111,7 +116,7 @@ class SlurmJobGenerator:
 
         cmd = self.config.build_coyote_cmd('dryrun')
         cmd[0] = str(bin_dir / cmd[0])
-        cmd_str = " ".join(cmd)
+        cmd_str = self._quote_cmd(cmd)
 
         script_content = f"{header}{env_setup}echo \"Starting CF generation at $(date)\"\n{cmd_str}\necho \"Finished CF generation at $(date)\"\n"
 
@@ -250,7 +255,7 @@ if __name__ == "__main__":
 
         cmd = self.config.build_roadrunner_cmd(iteration, mode)
         cmd[0] = str(bin_dir / cmd[0])
-        cmd_str = " ".join(cmd)
+        cmd_str = self._quote_cmd(cmd)
 
         script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
 
@@ -275,27 +280,30 @@ if __name__ == "__main__":
 
         dale_residual_cmd = self.config.build_dale_cmd(iteration, "residual")
         dale_residual_cmd[0] = str(bin_dir / dale_residual_cmd[0])
+        dale_residual_str = self._quote_cmd(dale_residual_cmd)
 
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
         hummbee_cmd[0] = str(bin_dir / hummbee_cmd[0])
+        hummbee_str = self._quote_cmd(hummbee_cmd)
 
         # Only normalize PSF in iteration 0
         psf_normalization = ""
         if iteration == 0:
             dale_psf_cmd = self.config.build_dale_cmd(iteration, "psf")
             dale_psf_cmd[0] = str(bin_dir / dale_psf_cmd[0])
+            dale_psf_str = self._quote_cmd(dale_psf_cmd)
             psf_normalization = f"""echo "Normalizing PSF..."
-{' '.join(dale_psf_cmd)}
+{dale_psf_str}
 
 """
 
         script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
 
 {psf_normalization}echo "Normalizing residual..."
-{' '.join(dale_residual_cmd)}
+{dale_residual_str}
 
 echo "Running deconvolution..."
-{' '.join(hummbee_cmd)}
+{hummbee_str}
 
 echo "Finished {job_name} at $(date)"
 """
