@@ -23,10 +23,18 @@ pipeline:
   stage: "full"                      # Pipeline stage: "cf_only", "imaging_only", "full"
 
 environment:
+  # Singularity container (optional - leave container_image empty to use direct binaries)
+  container_image: ""                # Path to singularity .sif file
+  container_binds:                   # Directories to bind-mount into container
+    - "/mnt/scratch/f0100243"
+    - "/mnt/ffs24/home/f0100243"
+
   # Option 1: Use same binaries/libs for GPU and CPU jobs
   bin_dir: ""                        # Path to executables (roadrunner-x, dale-x, hummbee-x)
-  lib_dir: ""                        # Path to shared libraries
-  casapath: ""                       # Path to CASA data repository (required)
+                                     # If using container: path INSIDE container (e.g., /data/libra/install/bin)
+                                     # If not using container: absolute path on host
+  lib_dir: ""                        # Path to shared libraries (ignored if using container)
+  casapath: ""                       # Path to CASA data repository (ignored if using container)
 
   # Option 2: Use separate GPU/CPU binaries (for arch-specific builds)
   bin_dir_gpu: ""                    # GPU-specific binaries (optional, overrides bin_dir)
@@ -137,7 +145,7 @@ dale:
 
 hummbee:
   # Deconvolution algorithm
-  deconvolver: "hogbom"              # Options: hogbom, clark, multiscale, mtmfs, asp
+  deconvolver: "asp"                 # Options: hogbom, clark, multiscale, mtmfs, asp
   nterms: 1                          # Taylor terms for mtmfs (1 for non-wideband)
 
   # Stopping criteria

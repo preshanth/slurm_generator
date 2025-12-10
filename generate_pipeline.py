@@ -17,6 +17,35 @@ class SlurmJobGenerator:
         """Properly quote command arguments that contain spaces or special chars"""
         return " ".join(shlex.quote(arg) for arg in cmd)
 
+    def _containerize_cmd(self, cmd: list, job_type: str) -> str:
+        """Wrap command with singularity exec if container configured, else quote normally"""
+        container = self.config.config['environment'].get('container_image', '')
+
+        if container:
+            # Build singularity exec command
+            binds = self.config.config['environment'].get('container_binds', [])
+            sing_cmd = ['singularity', 'exec']
+
+            # Add bind mounts
+            for bind in binds:
+                sing_cmd.extend(['--bind', bind])
+
+            # Set working directory and container image
+            sing_cmd.extend(['--pwd', '$PWD', container])
+
+            # Append tool command with path inside container
+            bin_dir = Path(self.config.config['environment']['bin_dir'])
+            cmd[0] = str(bin_dir / cmd[0])
+            sing_cmd.extend(cmd)
+
+            # Quote everything except $PWD (needs to expand)
+            return " ".join(shlex.quote(arg) if arg != '$PWD' else arg for arg in sing_cmd)
+        else:
+            # No container - use old method
+            bin_dir = self._get_bin_dir(job_type)
+            cmd[0] = str(bin_dir / cmd[0])
+            return self._quote_cmd(cmd)
+
     def _get_bin_dir(self, job_type: str) -> Path:
         env = self.config.config['environment']
         if job_type == 'gpu':
@@ -38,6 +67,11 @@ class SlurmJobGenerator:
         return Path(env['lib_dir'])
 
     def _generate_env_setup(self, job_type: str) -> str:
+        # Skip env setup when using container - everything is baked in
+        container = self.config.config['environment'].get('container_image', '')
+        if container:
+            return ""
+
         lib_dir = self._get_lib_dir(job_type)
         casapath = Path(self.config.config['environment']['casapath'])
 
@@ -112,11 +146,9 @@ class SlurmJobGenerator:
         header = "\n".join(lines)
 
         env_setup = self._generate_env_setup('cpu')
-        bin_dir = self._get_bin_dir('cpu')
 
         cmd = self.config.build_coyote_cmd('dryrun')
-        cmd[0] = str(bin_dir / cmd[0])
-        cmd_str = self._quote_cmd(cmd)
+        cmd_str = self._containerize_cmd(cmd, 'cpu')
 
         script_content = f"{header}{env_setup}echo \"Starting CF generation at $(date)\"\n{cmd_str}\necho \"Finished CF generation at $(date)\"\n"
 
@@ -164,11 +196,22 @@ class SlurmJobGenerator:
 
         worker_script = self.scripts_dir / "fillcf_worker.py"
         cfcache_dir = coy_cfg['cfcache']
-        bin_dir = self._get_bin_dir('cpu')
-        coyote_bin = str(bin_dir / "coyote")
+
+        # Build worker invocation with container support
+        container = self.config.config['environment'].get('container_image', '')
+        if container:
+            bin_dir = Path(self.config.config['environment']['bin_dir'])
+            coyote_bin = str(bin_dir / "coyote")
+            binds = self.config.config['environment'].get('container_binds', [])
+            binds_arg = " ".join([f"--bind {b}" for b in binds])
+            worker_call = f"python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin} --container {container} --container_binds '{binds_arg}'"
+        else:
+            bin_dir = self._get_bin_dir('cpu')
+            coyote_bin = str(bin_dir / "coyote")
+            worker_call = f"python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin}"
 
         script_content = f"""{header}{env_setup}echo "Starting CF filling task $SLURM_ARRAY_TASK_ID at $(date)"
-python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin}
+{worker_call}
 echo "Finished CF filling task $SLURM_ARRAY_TASK_ID at $(date)"
 """
 
@@ -220,13 +263,27 @@ def distribute_cfs(cfcache_dir, nprocs, task_id):
 
     return assigned
 
-def fill_cfs(cfs, cfcache_dir, coyote_bin, cmd_params):
+def fill_cfs(cfs, cfcache_dir, coyote_bin, cmd_params, container=None, container_binds=None):
     if not cfs:
         print("No CFs assigned to this task")
         return
 
     cflist = ",".join(cfs)
-    cmd = [coyote_bin] + cmd_params + [f"cflist={{cflist}}"]
+
+    # Build command - wrap with singularity if container specified
+    if container:
+        cmd = ['singularity', 'exec']
+        if container_binds:
+            for bind in container_binds.split():
+                if bind.startswith('--bind'):
+                    cmd.append(bind)
+                else:
+                    cmd.extend(['--bind', bind])
+        cmd.extend(['--pwd', os.getcwd(), container, coyote_bin])
+        cmd.extend(cmd_params)
+        cmd.append(f"cflist={{cflist}}")
+    else:
+        cmd = [coyote_bin] + cmd_params + [f"cflist={{cflist}}"]
 
     print(f"\\nProcessing {{len(cfs)}} CFs:")
     for cf in cfs:
@@ -253,6 +310,8 @@ if __name__ == "__main__":
     parser.add_argument('--cfcache_dir', required=True, help='CF cache directory')
     parser.add_argument('--nprocs', type=int, required=True, help='Number of processes')
     parser.add_argument('--coyote_bin', required=True, help='Path to coyote binary')
+    parser.add_argument('--container', default=None, help='Singularity container image')
+    parser.add_argument('--container_binds', default=None, help='Container bind mounts')
     args = parser.parse_args()
 
     task_id = int(os.getenv('SLURM_ARRAY_TASK_ID', '0'))
@@ -265,7 +324,7 @@ if __name__ == "__main__":
     print(f"Total processes: {{args.nprocs}}\\n")
 
     cfs = distribute_cfs(args.cfcache_dir, args.nprocs, task_id)
-    fill_cfs(cfs, args.cfcache_dir, args.coyote_bin, cmd_params)
+    fill_cfs(cfs, args.cfcache_dir, args.coyote_bin, cmd_params, args.container, args.container_binds)
 '''
 
         worker_path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,11 +340,9 @@ if __name__ == "__main__":
         header = self._generate_sbatch_header(job_name, 'gpu', str(log_file))
 
         env_setup = self._generate_env_setup('gpu')
-        bin_dir = self._get_bin_dir('gpu')
 
         cmd = self.config.build_roadrunner_cmd(iteration, mode)
-        cmd[0] = str(bin_dir / cmd[0])
-        cmd_str = self._quote_cmd(cmd)
+        cmd_str = self._containerize_cmd(cmd, 'gpu')
 
         script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
 
@@ -304,24 +361,20 @@ if __name__ == "__main__":
         header = self._generate_sbatch_header(job_name, 'cpu', str(log_file))
 
         env_setup = self._generate_env_setup('cpu')
-        bin_dir = self._get_bin_dir('cpu')
 
         imagename = self.config.get_imagename(iteration)
 
         dale_residual_cmd = self.config.build_dale_cmd(iteration, "residual")
-        dale_residual_cmd[0] = str(bin_dir / dale_residual_cmd[0])
-        dale_residual_str = self._quote_cmd(dale_residual_cmd)
+        dale_residual_str = self._containerize_cmd(dale_residual_cmd, 'cpu')
 
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
-        hummbee_cmd[0] = str(bin_dir / hummbee_cmd[0])
-        hummbee_str = self._quote_cmd(hummbee_cmd)
+        hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
 
         # Only normalize PSF in iteration 0
         psf_normalization = ""
         if iteration == 0:
             dale_psf_cmd = self.config.build_dale_cmd(iteration, "psf")
-            dale_psf_cmd[0] = str(bin_dir / dale_psf_cmd[0])
-            dale_psf_str = self._quote_cmd(dale_psf_cmd)
+            dale_psf_str = self._containerize_cmd(dale_psf_cmd, 'cpu')
             psf_normalization = f"""echo "Normalizing PSF..."
 {dale_psf_str}
 
