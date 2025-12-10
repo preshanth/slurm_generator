@@ -26,6 +26,10 @@ class SlurmJobGenerator:
             binds = self.config.config['environment'].get('container_binds', [])
             sing_cmd = ['singularity', 'exec']
 
+            # Add NVIDIA GPU support for GPU jobs
+            if job_type == 'gpu':
+                sing_cmd.append('--nv')
+
             # Add bind mounts
             for bind in binds:
                 sing_cmd.extend(['--bind', bind])
