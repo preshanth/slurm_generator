@@ -242,9 +242,10 @@ import subprocess
 import sys
 
 def distribute_cfs(cfcache_dir, nprocs, task_id):
-    # Look for all CF directories (broader pattern)
+    # Look for all CF directories (exclude WTCF - weighted CFs)
     pattern = os.path.join(cfcache_dir, '*CF*.im')
-    cfs = sorted([os.path.basename(f) for f in glob.glob(pattern) if os.path.isdir(f)])
+    cfs = sorted([os.path.basename(f) for f in glob.glob(pattern)
+                  if os.path.isdir(f) and 'WTCF' not in os.path.basename(f)])
 
     print(f"Task {{task_id}}: Found {{len(cfs)}} total CFs in {{cfcache_dir}}")
 
