@@ -26,14 +26,27 @@ class ImagingConfig:
 
         if validate_paths:
             env = self.config['environment']
+            using_container = bool(env.get('container_image'))
+
+            # If using container, validate the container file exists
+            if using_container:
+                container_path = Path(env['container_image'])
+                if not container_path.exists():
+                    raise ValueError(f"Container image not found: {env['container_image']}")
+                if not container_path.is_file():
+                    raise ValueError(f"Container image is not a file: {env['container_image']}")
+
+            # Always require bin_dir (path inside container or on host)
             if not env['bin_dir'] and not (env.get('bin_dir_gpu') and env.get('bin_dir_cpu')):
                 raise ValueError("environment.bin_dir or both bin_dir_gpu/bin_dir_cpu must be specified")
 
-            if not env['lib_dir'] and not (env.get('lib_dir_gpu') and env.get('lib_dir_cpu')):
-                raise ValueError("environment.lib_dir or both lib_dir_gpu/lib_dir_cpu must be specified")
+            # lib_dir and casapath only required for non-container mode
+            if not using_container:
+                if not env['lib_dir'] and not (env.get('lib_dir_gpu') and env.get('lib_dir_cpu')):
+                    raise ValueError("environment.lib_dir or both lib_dir_gpu/lib_dir_cpu must be specified")
 
-            if not env['casapath']:
-                raise ValueError("environment.casapath must be specified")
+                if not env['casapath']:
+                    raise ValueError("environment.casapath must be specified")
 
             if not self.config['data']['vis']:
                 raise ValueError("data.vis must be specified")
