@@ -203,7 +203,7 @@ class SlurmJobGenerator:
             bin_dir = Path(self.config.config['environment']['bin_dir'])
             coyote_bin = str(bin_dir / "coyote")
             binds = self.config.config['environment'].get('container_binds', [])
-            binds_arg = " ".join([f"--bind {b}" for b in binds])
+            binds_arg = " ".join(binds)
             worker_call = f"python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin} --container {container} --container_binds '{binds_arg}'"
         else:
             bin_dir = self._get_bin_dir('cpu')
