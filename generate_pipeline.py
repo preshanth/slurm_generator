@@ -354,7 +354,21 @@ if __name__ == "__main__":
         cmd = self.config.build_roadrunner_cmd(iteration, mode)
         cmd_str = self._containerize_cmd(cmd, 'gpu')
 
-        script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
+        # For iter1+ residual mode: copy PSF and weight from iter0
+        prep_commands = ""
+        if iteration > 0 and mode == "residual":
+            base_name = self.config.get_imagename_base()
+            iter0_psf = f"{base_name}_iter0.psf"
+            iter0_weight = f"{base_name}_iter0.weight"
+            current_psf = f"{base_name}_iter{iteration}.psf"
+            current_weight = f"{base_name}_iter{iteration}.weight"
+            prep_commands = f"""echo "Copying PSF and weight from iter0..."
+cp -r {iter0_psf} {current_psf}
+cp -r {iter0_weight} {current_weight}
+
+"""
+
+        script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{prep_commands}{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
 
         script_path.parent.mkdir(parents=True, exist_ok=True)
         with open(script_path, 'w') as f:
@@ -380,6 +394,10 @@ if __name__ == "__main__":
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
         hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
 
+        # Normalize model after deconvolution (creates .divmodel for next iteration)
+        dale_model_cmd = self.config.build_dale_cmd(iteration, "model")
+        dale_model_str = self._containerize_cmd(dale_model_cmd, 'cpu')
+
         # Only normalize PSF in iteration 0
         psf_normalization = ""
         if iteration == 0:
@@ -397,6 +415,9 @@ if __name__ == "__main__":
 
 echo "Running deconvolution..."
 {hummbee_str}
+
+echo "Normalizing model (creates .divmodel)..."
+{dale_model_str}
 
 echo "Finished {job_name} at $(date)"
 """

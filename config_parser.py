@@ -95,7 +95,8 @@ class ImagingConfig:
     def get_modelimagename(self, iteration: int) -> str:
         if iteration == 0:
             return ""
-        return f"{self.get_imagename_base()}_iter{iteration-1}.model"
+        # Use .divmodel (normalized model) from previous iteration
+        return f"{self.get_imagename_base()}_iter{iteration-1}.divmodel"
 
     def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
