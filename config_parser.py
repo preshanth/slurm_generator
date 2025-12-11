@@ -99,7 +99,9 @@ class ImagingConfig:
 
     def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
-        imagename = self.get_imagename(iteration)
+        imagename_base = self.get_imagename(iteration)
+        # Roadrunner needs full imagename with extension for each mode
+        imagename = f"{imagename_base}.{mode}"
         modelimagename = self.get_modelimagename(iteration)
 
         cmd = [
