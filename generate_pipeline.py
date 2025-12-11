@@ -71,11 +71,16 @@ class SlurmJobGenerator:
         return Path(env['lib_dir'])
 
     def _generate_env_setup(self, job_type: str) -> str:
-        # Skip env setup when using container - everything is baked in
         container = self.config.config['environment'].get('container_image', '')
+
         if container:
+            # In container mode, still export CASAPATH if specified
+            casapath = self.config.config['environment'].get('casapath', '')
+            if casapath:
+                return f"export CASAPATH={casapath}\n"
             return ""
 
+        # Non-container mode: set LD_LIBRARY_PATH and CASAPATH
         lib_dir = self._get_lib_dir(job_type)
         casapath = Path(self.config.config['environment']['casapath'])
 
