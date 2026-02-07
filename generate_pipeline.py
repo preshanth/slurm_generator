@@ -417,9 +417,15 @@ echo "Running deconvolution..."
 {hummbee_str}
 
 echo "Normalizing model (creates .divmodel)..."
-{dale_model_str}
+ {dale_model_str}
 
-echo "Finished {job_name} at $(date)"
+ # Clean normalized tag from model for proper flux updates in subsequent iterations
+ if [ $iter -gt 0 ]; then
+     echo "Cleaning normalized tag from model..."
+     sed -i 's/SubType.*=.*//g' $imagename.model/table.info
+ fi
+
+ echo "Finished {job_name} at $(date)"
 """
 
         script_path.parent.mkdir(parents=True, exist_ok=True)
