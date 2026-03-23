@@ -68,6 +68,12 @@ data:
   vis: ""                            # Path to measurement set (required)
   imagename_base: "test_image"       # Base name for output images
 
+pbmask:
+  enabled: false                     # Generate an analytical CRTF ellipse mask from PB estimate
+  pb_level: 0.2                      # PB gain level at mask edge (e.g., 0.2 matches dale.pblimit)
+  fwhm_coeff: 45.0                   # FWHM = fwhm_coeff / freq_GHz (arcmin). 45.0 for VLA/EVLA,
+                                     # 57.5 for WSRT, 68.0 for MeerKAT, 27.0 for ALMA 12m
+
 coyote:
   enabled: false                     # Enable CF generation and filling (optional)
 

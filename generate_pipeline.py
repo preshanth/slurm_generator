@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import sys
 import os
 import shlex
@@ -121,7 +122,7 @@ class SlurmJobGenerator:
             lines.append(f"#SBATCH --mail-user={slurm_cfg['email']}")
             lines.append(f"#SBATCH --mail-type={slurm_cfg['mail_type']}")
 
-        lines.append("")
+        lines.extend(["", "set -e", "set -o pipefail", ""])
         return "\n".join(lines)
 
     def generate_coyote_cfgen_job(self) -> Path:
@@ -151,7 +152,7 @@ class SlurmJobGenerator:
             lines.append(f"#SBATCH --mail-user={slurm_cfg['email']}")
             lines.append(f"#SBATCH --mail-type={slurm_cfg['mail_type']}")
 
-        lines.append("")
+        lines.extend(["", "set -e", "set -o pipefail", ""])
         header = "\n".join(lines)
 
         env_setup = self._generate_env_setup('cpu')
@@ -198,7 +199,7 @@ class SlurmJobGenerator:
             lines.append(f"#SBATCH --mail-user={slurm_cfg['email']}")
             lines.append(f"#SBATCH --mail-type={slurm_cfg['mail_type']}")
 
-        lines.append("")
+        lines.extend(["", "set -e", "set -o pipefail", ""])
         header = "\n".join(lines)
 
         env_setup = self._generate_env_setup('cpu')
@@ -212,8 +213,8 @@ class SlurmJobGenerator:
             bin_dir = Path(self.config.config['environment']['bin_dir'])
             coyote_bin = str(bin_dir / "coyote")
             binds = self.config.config['environment'].get('container_binds', [])
-            binds_arg = " ".join(binds)
-            worker_call = f"python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin} --container {container} --container_binds '{binds_arg}'"
+            binds_args = " ".join(f"--container_binds {shlex.quote(b)}" for b in binds)
+            worker_call = f"python3 {worker_script} --cfcache_dir {cfcache_dir} --nprocs {nprocs} --coyote_bin {coyote_bin} --container {container} {binds_args}"
         else:
             bin_dir = self._get_bin_dir('cpu')
             coyote_bin = str(bin_dir / "coyote")
@@ -283,12 +284,8 @@ def fill_cfs(cfs, cfcache_dir, coyote_bin, cmd_params, container=None, container
     # Build command - wrap with singularity if container specified
     if container:
         cmd = ['singularity', 'exec']
-        if container_binds:
-            for bind in container_binds.split():
-                if bind.startswith('--bind'):
-                    cmd.append(bind)
-                else:
-                    cmd.extend(['--bind', bind])
+        for bind in (container_binds or []):
+            cmd.extend(['--bind', bind])
         cmd.extend(['--pwd', os.getcwd(), container, coyote_bin])
         cmd.extend(cmd_params)
         cmd.append(f"cflist={{cflist}}")
@@ -321,7 +318,7 @@ if __name__ == "__main__":
     parser.add_argument('--nprocs', type=int, required=True, help='Number of processes')
     parser.add_argument('--coyote_bin', required=True, help='Path to coyote binary')
     parser.add_argument('--container', default=None, help='Singularity container image')
-    parser.add_argument('--container_binds', default=None, help='Container bind mounts')
+    parser.add_argument('--container_binds', nargs='*', default=[], help='Container bind mount paths')
     args = parser.parse_args()
 
     task_id = int(os.getenv('SLURM_ARRAY_TASK_ID', '0'))
@@ -363,6 +360,14 @@ if __name__ == "__main__":
             current_psf = f"{base_name}_iter{iteration}.psf"
             current_weight = f"{base_name}_iter{iteration}.weight"
             prep_commands = f"""echo "Copying PSF and weight from iter0..."
+if [ ! -d {iter0_psf} ]; then
+    echo "ERROR: iter0 PSF not found: {iter0_psf}"
+    exit 1
+fi
+if [ ! -d {iter0_weight} ]; then
+    echo "ERROR: iter0 weight not found: {iter0_weight}"
+    exit 1
+fi
 cp -r {iter0_psf} {current_psf}
 cp -r {iter0_weight} {current_weight}
 
@@ -408,6 +413,14 @@ cp -r {iter0_weight} {current_weight}
 
 """
 
+        # Clean normalized tag from model so Dale can re-normalize in subsequent iterations
+        tag_cleanup = ""
+        if iteration > 0:
+            tag_cleanup = f"""echo "Cleaning normalized tag from model..."
+sed -i 's/SubType.*=.*//g' {imagename}.model/table.info
+
+"""
+
         script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
 
 {psf_normalization}echo "Normalizing residual..."
@@ -417,15 +430,9 @@ echo "Running deconvolution..."
 {hummbee_str}
 
 echo "Normalizing model (creates .divmodel)..."
- {dale_model_str}
+{dale_model_str}
 
- # Clean normalized tag from model for proper flux updates in subsequent iterations
- if [ $iter -gt 0 ]; then
-     echo "Cleaning normalized tag from model..."
-     sed -i 's/SubType.*=.*//g' $imagename.model/table.info
- fi
-
- echo "Finished {job_name} at $(date)"
+{tag_cleanup}echo "Finished {job_name} at $(date)"
 """
 
         script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -464,13 +471,41 @@ echo "Normalizing model (creates .divmodel)..."
             f.write("\n".join(cancel_lines))
         cancel_script_path.chmod(0o755)
 
+    def generate_pbmask(self) -> Path:
+        """Generate a CRTF ellipse mask from a Gaussian primary beam estimate.
+
+        FWHM (arcmin) = fwhm_coeff / freq_GHz
+        Mask radius    = FWHM * sqrt(-ln(pb_level) / (4 * ln(2)))
+        """
+        pbmask_cfg = self.config.config['pbmask']
+        rr = self.config.config['roadrunner']
+
+        freq_ghz = float(rr['reffreq']) / 1e9
+        fwhm_arcmin = pbmask_cfg['fwhm_coeff'] / freq_ghz
+        pb_level = pbmask_cfg['pb_level']
+        radius_arcmin = fwhm_arcmin * math.sqrt(-math.log(pb_level) / (4 * math.log(2)))
+
+        # Phasecenter format is always "J2000 <RA> <Dec>"
+        _, ra, dec = rr['phasecenter'].split()
+
+        crtf_content = (
+            "#CRTFv0 CASA Region Text Format version 0\n"
+            f"ellipse[[{ra}, {dec}], [{radius_arcmin:.4f}arcmin, {radius_arcmin:.4f}arcmin], 0.0deg]\n"
+        )
+
+        mask_path = self.work_dir / "pbmask.crtf"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        mask_path.write_text(crtf_content)
+
+        return mask_path
+
     def generate_full_pipeline(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
 
         submit_script_path = self.work_dir / "submit_pipeline.sh"
         job_ids_file = self.work_dir / ".pipeline_job_ids"
-        submit_lines = ["#!/bin/bash --login", "", "set -e", ""]
+        submit_lines = ["#!/bin/bash --login", "", "set -e", "set -o pipefail", ""]
         submit_lines.append(f"# Track all submitted job IDs for cancellation")
         submit_lines.append(f"JOBIDS_FILE={job_ids_file}")
         submit_lines.append(f"echo '' > $JOBIDS_FILE")
@@ -510,6 +545,12 @@ echo "Normalizing model (creates .divmodel)..."
             print(f"To cancel pipeline: {self.work_dir}/cancel_pipeline.sh")
             print(f"Pipeline stage: {stage}")
             return
+
+        # PB mask generation (analytical, written at pipeline-creation time)
+        if self.config.is_pbmask_enabled():
+            mask_path = self.generate_pbmask()
+            self.config.config['hummbee']['mask'].append(str(mask_path))
+            print(f"Generated PB mask: {mask_path}")
 
         # Imaging iterations stage
         if stage in ['imaging_only', 'full']:

@@ -202,6 +202,9 @@ class ImagingConfig:
     def is_coyote_enabled(self) -> bool:
         return self.config.get('coyote', {}).get('enabled', False)
 
+    def is_pbmask_enabled(self) -> bool:
+        return self.config.get('pbmask', {}).get('enabled', False)
+
     def build_coyote_cmd(self, mode: str) -> List[str]:
         coy = self.config['coyote']
         rr = self.config['roadrunner']
@@ -256,7 +259,7 @@ if __name__ == "__main__":
     print(f"Measurement set: {config.get_vis()}")
     print(f"\nExample commands for iteration 0:")
     print("\nRoadRunner (residual):")
-    print(" ".join(config.build_roadrunner_cmd(0, "residual", "residual")))
+    print(" ".join(config.build_roadrunner_cmd(0, "residual")))
     print("\nDale (PSF normalization):")
     print(" ".join(config.build_dale_cmd(0, "psf")))
     print("\nHummbee (deconvolution):")
