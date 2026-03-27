@@ -399,8 +399,9 @@ cp -r {iter0_weight} {current_weight}
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
         hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
 
-        # Normalize model after deconvolution (creates .divmodel for next iteration)
-        dale_model_cmd = self.config.build_dale_cmd(iteration, "model")
+        # Normalize cumulative model after deconvolution (creates .divmodel for next iteration)
+        base_name = self.config.get_imagename_base()
+        dale_model_cmd = self.config.build_dale_cmd(iteration, "model", imagename=base_name)
         dale_model_str = self._containerize_cmd(dale_model_cmd, 'cpu')
 
         # Only normalize PSF in iteration 0
@@ -413,11 +414,12 @@ cp -r {iter0_weight} {current_weight}
 
 """
 
-        # Clean normalized tag from model so Dale can re-normalize in subsequent iterations
-        tag_cleanup = ""
-        if iteration > 0:
-            tag_cleanup = f"""echo "Cleaning normalized tag from model..."
-sed -i 's/SubType.*=.*//g' {imagename}.model/table.info
+        # Snapshot cumulative model before dale normalizes it
+        model_backup = f"cp -r {base_name}.model {imagename}.model"
+
+        # Clean normalized tag dale sets on the cumulative model so it can be re-normalized next iteration
+        tag_cleanup = f"""echo "Cleaning normalized tag from cumulative model..."
+sed -i 's/SubType.*=.*//g' {base_name}.model/table.info
 
 """
 
@@ -429,7 +431,10 @@ sed -i 's/SubType.*=.*//g' {imagename}.model/table.info
 echo "Running deconvolution..."
 {hummbee_str}
 
-echo "Normalizing model (creates .divmodel)..."
+echo "Snapshotting model to {imagename}.model..."
+{model_backup}
+
+echo "Normalizing cumulative model (creates .divmodel)..."
 {dale_model_str}
 
 {tag_cleanup}echo "Finished {job_name} at $(date)"

@@ -95,8 +95,8 @@ class ImagingConfig:
     def get_modelimagename(self, iteration: int) -> str:
         if iteration == 0:
             return ""
-        # Use .divmodel (normalized model) from previous iteration
-        return f"{self.get_imagename_base()}_iter{iteration-1}.divmodel"
+        # Use cumulative .divmodel — always points to the single accumulating model
+        return f"{self.get_imagename_base()}.divmodel"
 
     def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
@@ -138,9 +138,10 @@ class ImagingConfig:
         ]
         return cmd
 
-    def build_dale_cmd(self, iteration: int, imtype: str) -> List[str]:
+    def build_dale_cmd(self, iteration: int, imtype: str, imagename: str = None) -> List[str]:
         dale = self.config['dale']
-        imagename = self.get_imagename(iteration)
+        if imagename is None:
+            imagename = self.get_imagename(iteration)
 
         # Always use iter0 weight for normalization
         weightimage = f"{self.get_imagename_base()}_iter0.weight"
@@ -163,7 +164,7 @@ class ImagingConfig:
     def build_hummbee_cmd(self, iteration: int) -> List[str]:
         hb = self.config['hummbee']
         imagename = self.get_imagename(iteration)
-        modelimagename = f"{imagename}.model"
+        modelimagename = f"{self.get_imagename_base()}.model"
 
         cmd = [
             "hummbee",
