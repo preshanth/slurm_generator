@@ -95,8 +95,7 @@ class ImagingConfig:
     def get_modelimagename(self, iteration: int) -> str:
         if iteration == 0:
             return ""
-        # Use cumulative .divmodel — always points to the single accumulating model
-        return f"{self.get_imagename_base()}.divmodel"
+        return f"{self.get_imagename_base()}_iter{iteration-1}.divmodel"
 
     def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
@@ -164,7 +163,7 @@ class ImagingConfig:
     def build_hummbee_cmd(self, iteration: int) -> List[str]:
         hb = self.config['hummbee']
         imagename = self.get_imagename(iteration)
-        modelimagename = f"{self.get_imagename_base()}.model"
+        modelimagename = f"{imagename}.model"
 
         cmd = [
             "hummbee",

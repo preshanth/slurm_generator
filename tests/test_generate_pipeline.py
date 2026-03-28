@@ -154,10 +154,23 @@ def test_cpu_iter0_no_tag_cleanup(tmp_path):
 def test_cpu_iter1_has_tag_cleanup_with_correct_imagename(tmp_path):
     gen = make_generator(tmp_path)
     script = read_script(gen.generate_cpu_job(1))
-    # Should contain the literal imagename, not a shell variable
     assert "test_image_iter1.model/table.info" in script
     assert "Cleaning normalized tag" in script
 
+
+def test_cpu_iter1_copies_prev_model_before_hummbee(tmp_path):
+    gen = make_generator(tmp_path)
+    script = read_script(gen.generate_cpu_job(1))
+    assert "cp -r test_image_iter0.model test_image_iter1.model" in script
+    # Copy must appear before hummbee invocation
+    copy_pos = script.index("cp -r test_image_iter0.model")
+    hummbee_pos = script.index("hummbee")
+    assert copy_pos < hummbee_pos
+
+def test_cpu_iter0_no_model_copy(tmp_path):
+    gen = make_generator(tmp_path)
+    script = read_script(gen.generate_cpu_job(0))
+    assert "cp -r" not in script or "iter" not in script.split("cp -r")[1].split("\n")[0]
 
 def test_cpu_iter1_no_psf_normalization(tmp_path):
     gen = make_generator(tmp_path)

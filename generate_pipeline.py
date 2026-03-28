@@ -399,9 +399,8 @@ cp -r {iter0_weight} {current_weight}
         hummbee_cmd = self.config.build_hummbee_cmd(iteration)
         hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
 
-        # Normalize cumulative model after deconvolution (creates .divmodel for next iteration)
-        base_name = self.config.get_imagename_base()
-        dale_model_cmd = self.config.build_dale_cmd(iteration, "model", imagename=base_name)
+        # Normalize model after deconvolution (creates .divmodel for next iteration)
+        dale_model_cmd = self.config.build_dale_cmd(iteration, "model")
         dale_model_str = self._containerize_cmd(dale_model_cmd, 'cpu')
 
         # Only normalize PSF in iteration 0
@@ -414,27 +413,33 @@ cp -r {iter0_weight} {current_weight}
 
 """
 
-        # Snapshot cumulative model before dale normalizes it
-        model_backup = f"cp -r {base_name}.model {imagename}.model"
+        # For iter > 0: copy previous model into current so hummbee accumulates
+        model_accumulate = ""
+        if iteration > 0:
+            base_name = self.config.get_imagename_base()
+            prev_model = f"{base_name}_iter{iteration-1}.model"
+            model_accumulate = f"""echo "Copying iter{iteration-1} model for accumulation..."
+cp -r {prev_model} {imagename}.model
 
-        # Clean normalized tag dale sets on the cumulative model so it can be re-normalized next iteration
-        tag_cleanup = f"""echo "Cleaning normalized tag from cumulative model..."
-sed -i 's/SubType.*=.*//g' {base_name}.model/table.info
+"""
+
+        # Clean normalized tag from model so dale can re-normalize next iteration
+        tag_cleanup = ""
+        if iteration > 0:
+            tag_cleanup = f"""echo "Cleaning normalized tag from model..."
+sed -i 's/SubType.*=.*//g' {imagename}.model/table.info
 
 """
 
         script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
 
-{psf_normalization}echo "Normalizing residual..."
+{psf_normalization}{model_accumulate}echo "Normalizing residual..."
 {dale_residual_str}
 
 echo "Running deconvolution..."
 {hummbee_str}
 
-echo "Snapshotting model to {imagename}.model..."
-{model_backup}
-
-echo "Normalizing cumulative model (creates .divmodel)..."
+echo "Normalizing model (creates .divmodel)..."
 {dale_model_str}
 
 {tag_cleanup}echo "Finished {job_name} at $(date)"
