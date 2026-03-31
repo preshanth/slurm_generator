@@ -428,7 +428,7 @@ cp -r {base_name}.pb {base_name}_iter0.pb
         if iteration >= 1:
             prev1 = iteration - 1
             convergence_check = f"""
-PREV_PEAK=$(awk '/^iter{prev1} /{{print $2}}' {peak_file})
+PREV_PEAK=$(awk '/^iter{prev1} /{{print $2}}' {peak_file} 2>/dev/null || echo "")
 if [ -n "$PREV_PEAK" ] && [ -n "$PEAK_RES" ]; then
     awk -v curr="$PEAK_RES" -v prev="$PREV_PEAK" 'BEGIN {{
         if (prev > 0) {{
@@ -441,12 +441,12 @@ if [ -n "$PREV_PEAK" ] && [ -n "$PEAK_RES" ]; then
                 print "========================================================"
             }}
         }}
-    }}'
+    }}' || true
 fi"""
 
         peak_tracking = f"""HUMMBEE_TMP=$(mktemp)
 {hummbee_str} 2>&1 | tee "$HUMMBEE_TMP"
-PEAK_RES=$(grep "SDAlgorithmBase::deconvolve" "$HUMMBEE_TMP" | tail -1 | {sed_extract})
+PEAK_RES=$(grep "SDAlgorithmBase::deconvolve" "$HUMMBEE_TMP" 2>/dev/null | tail -1 | {sed_extract} || echo "")
 rm -f "$HUMMBEE_TMP"
 
 if [ -n "$PEAK_RES" ]; then

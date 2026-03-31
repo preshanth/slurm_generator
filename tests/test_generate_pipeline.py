@@ -144,33 +144,49 @@ def test_cpu_iter0_has_psf_normalization(tmp_path):
     assert "imtype=psf" in script
 
 
-def test_cpu_iter0_no_tag_cleanup(tmp_path):
+def test_cpu_tag_cleanup_is_unconditional(tmp_path):
+    """Tag cleanup must appear in every iteration, not just iter > 0."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "Cleaning normalized tag" in script
+        assert "SubType" in script
+
+
+def test_cpu_tag_cleanup_targets_base_model(tmp_path):
+    """Tag cleanup must target {base}.model, not a per-iteration name."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "test_image.model/table.info" in script
+        assert f"test_image_iter{iteration}.model/table.info" not in script
+
+
+def test_cpu_no_model_accumulation_copy(tmp_path):
+    """No cp of prev iter model into current — hummbee accumulates in {base}.model."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "cp -r test_image_iter" not in script.split("Snapshotting")[0]
+
+
+def test_cpu_iter0_snapshots_include_psf_weight_pb(tmp_path):
     gen = make_generator(tmp_path)
     script = read_script(gen.generate_cpu_job(0))
-    assert "SubType" not in script
-    assert "Cleaning normalized tag" not in script
+    assert "cp -r test_image.psf test_image_iter0.psf" in script
+    assert "cp -r test_image.weight test_image_iter0.weight" in script
+    assert "cp -r test_image.pb test_image_iter0.pb" in script
 
 
-def test_cpu_iter1_has_tag_cleanup_with_correct_imagename(tmp_path):
+def test_cpu_iter1_snapshots_exclude_psf_weight_pb(tmp_path):
     gen = make_generator(tmp_path)
     script = read_script(gen.generate_cpu_job(1))
-    assert "test_image_iter1.model/table.info" in script
-    assert "Cleaning normalized tag" in script
-
-
-def test_cpu_iter1_copies_prev_model_before_hummbee(tmp_path):
-    gen = make_generator(tmp_path)
-    script = read_script(gen.generate_cpu_job(1))
-    assert "cp -r test_image_iter0.model test_image_iter1.model" in script
-    # Copy must appear before hummbee invocation
-    copy_pos = script.index("cp -r test_image_iter0.model")
-    hummbee_pos = script.index("hummbee")
-    assert copy_pos < hummbee_pos
-
-def test_cpu_iter0_no_model_copy(tmp_path):
-    gen = make_generator(tmp_path)
-    script = read_script(gen.generate_cpu_job(0))
-    assert "cp -r" not in script or "iter" not in script.split("cp -r")[1].split("\n")[0]
+    assert "test_image_iter1.psf" not in script
+    assert "test_image_iter1.weight" not in script
+    assert "test_image_iter1.pb" not in script
+    assert "cp -r test_image.residual test_image_iter1.residual" in script
+    assert "cp -r test_image.model test_image_iter1.model" in script
+    assert "cp -r test_image.divmodel test_image_iter1.divmodel" in script
 
 def test_cpu_iter1_no_psf_normalization(tmp_path):
     gen = make_generator(tmp_path)
@@ -209,21 +225,87 @@ def test_gpu_iter1_generates_only_residual(tmp_path):
     assert not (scripts_dir / "libra_iter1_weight.sh").exists()
 
 
-def test_gpu_iter1_has_existence_checks_before_copy(tmp_path):
+def test_gpu_iter1_no_psf_weight_copy(tmp_path):
+    """PSF and weight are stable at {base}.psf/.weight — no copy in GPU iter1+ jobs."""
     gen = make_generator(tmp_path)
     script = read_script(gen.generate_gpu_job(1, "residual"))
-    assert "if [ ! -d" in script
-    assert "exit 1" in script
-    assert "cp -r" in script
-    # Existence check must appear before the copy
-    check_pos = script.index("if [ ! -d")
-    copy_pos = script.index("cp -r")
-    assert check_pos < copy_pos
+    assert "cp -r" not in script
+    assert "iter0_psf" not in script
+    assert "iter0_weight" not in script
+
+
+def test_gpu_iter1_uses_base_divmodel(tmp_path):
+    """Roadrunner in iter1+ must use {base}.divmodel, not a per-iteration name."""
+    gen = make_generator(tmp_path)
+    script = read_script(gen.generate_gpu_job(1, "residual"))
+    assert "modelimagename=test_image.divmodel" in script
+    assert "iter0.divmodel" not in script
 
 
 # ---------------------------------------------------------------------------
 # Dependency chain test
 # ---------------------------------------------------------------------------
+
+def test_hummbee_uses_base_model(tmp_path):
+    """Hummbee modelimagename must be {base}.model for all iterations."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "modelimagename=test_image.model" in script
+        assert f"modelimagename=test_image_iter{iteration}.model" not in script
+
+
+def test_dale_uses_base_imagename(tmp_path):
+    """Dale imagename must be {base} for all iterations, not per-iteration."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "imagename=test_image " in script or "imagename=test_image\n" in script
+        assert f"imagename=test_image_iter{iteration}" not in script
+
+
+def test_cpu_iter0_computepb_on_psf_only(tmp_path):
+    """computepb=1 only for psf normalization in iter0, 0 everywhere else."""
+    gen = make_generator(tmp_path)
+    script = read_script(gen.generate_cpu_job(0))
+    assert "imtype=psf pblimit=0.2 computepb=1" in script
+    assert "imtype=residual pblimit=0.2 computepb=0" in script
+    assert "imtype=model pblimit=0.2 computepb=0" in script
+
+
+def test_peak_residual_tracking_present(tmp_path):
+    """Peak residual extraction must be in every CPU deconv job."""
+    gen = make_generator(tmp_path)
+    for iteration in range(2):
+        script = read_script(gen.generate_cpu_job(iteration))
+        assert "SDAlgorithmBase::deconvolve" in script
+        assert "PEAK_RES" in script
+        assert "peak_residuals.txt" in script
+
+
+def test_convergence_check_in_iter1_not_iter0(tmp_path):
+    """Convergence check against previous iteration only from iter1 onward."""
+    gen = make_generator(tmp_path)
+    assert "PREV_PEAK" not in read_script(gen.generate_cpu_job(0))
+    assert "PREV_PEAK" in read_script(gen.generate_cpu_job(1))
+
+
+def test_restore_job_generated(tmp_path):
+    """A restore job with mode=restore must be generated after the iteration loop."""
+    gen = make_generator(tmp_path)
+    gen.generate_full_pipeline()
+    script = read_script(tmp_path / "slurm_scripts" / "libra_restore.sh")
+    assert "mode=restore" in script
+    assert "imagename=test_image" in script
+
+
+def test_restore_job_depends_on_last_deconv(tmp_path):
+    gen = make_generator(tmp_path)  # 2 iterations → last is iter1
+    gen.generate_full_pipeline()
+    submit = (tmp_path / "submit_pipeline.sh").read_text()
+    assert "dependency=afterok:$iter1_deconv_id" in submit
+    assert "libra_restore.sh" in submit
+
 
 def test_submit_script_dependency_chain(tmp_path):
     gen = make_generator(tmp_path)
