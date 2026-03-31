@@ -420,13 +420,52 @@ cp -r {base_name}.weight {base_name}_iter0.weight
 cp -r {base_name}.pb {base_name}_iter0.pb
 """
 
+        # Peak residual extraction and convergence tracking
+        peak_file = self.work_dir / "peak_residuals.txt"
+        sed_extract = r"sed 's/.*peakres=[0-9.Ee+-]*->\([0-9.Ee+-]*\)[, ].*/\1/'"
+
+        convergence_check = ""
+        if iteration >= 1:
+            prev1 = iteration - 1
+            convergence_check = f"""
+PREV_PEAK=$(awk '/^iter{prev1} /{{print $2}}' {peak_file})
+if [ -n "$PREV_PEAK" ] && [ -n "$PEAK_RES" ]; then
+    awk -v curr="$PEAK_RES" -v prev="$PREV_PEAK" 'BEGIN {{
+        if (prev > 0) {{
+            change = (prev - curr) / prev * 100
+            printf "Convergence check: iter{iteration} peak=%.6f vs iter{prev1} peak=%.6f (%.1f%% improvement)\\n", curr, prev, change
+            if (change < 5.0) {{
+                print "========================================================"
+                print "WARNING: Cycle {iteration} has similar peak residual as cycle {prev1}"
+                print "         Deconvolution may have stalled"
+                print "========================================================"
+            }}
+        }}
+    }}'
+fi"""
+
+        peak_tracking = f"""HUMMBEE_TMP=$(mktemp)
+{hummbee_str} 2>&1 | tee "$HUMMBEE_TMP"
+PEAK_RES=$(grep "SDAlgorithmBase::deconvolve" "$HUMMBEE_TMP" | tail -1 | {sed_extract})
+rm -f "$HUMMBEE_TMP"
+
+if [ -n "$PEAK_RES" ]; then
+    echo "Peak residual after iter{iteration}: $PEAK_RES Jy/beam"
+    echo "iter{iteration} $PEAK_RES" >> {peak_file}
+else
+    echo "========================================================"
+    echo "WARNING: Could not extract peak residual from hummbee output"
+    echo "========================================================"
+fi
+{convergence_check}"""
+
         script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
 
 {psf_normalization}echo "Normalizing residual..."
 {dale_residual_str}
 
 echo "Running deconvolution..."
-{hummbee_str}
+{peak_tracking}
 
 echo "Normalizing model (creates .divmodel)..."
 {dale_model_str}
