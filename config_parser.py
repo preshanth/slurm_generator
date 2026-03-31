@@ -95,13 +95,12 @@ class ImagingConfig:
     def get_modelimagename(self, iteration: int) -> str:
         if iteration == 0:
             return ""
-        return f"{self.get_imagename_base()}_iter{iteration-1}.divmodel"
+        return f"{self.get_imagename_base()}.divmodel"
 
     def build_roadrunner_cmd(self, iteration: int, mode: str) -> List[str]:
         rr = self.config['roadrunner']
-        imagename_base = self.get_imagename(iteration)
-        # Roadrunner needs full imagename with extension for each mode
-        imagename = f"{imagename_base}.{mode}"
+        base = self.get_imagename_base()
+        imagename = f"{base}.{mode}"
         modelimagename = self.get_modelimagename(iteration)
 
         cmd = [
@@ -137,39 +136,36 @@ class ImagingConfig:
         ]
         return cmd
 
-    def build_dale_cmd(self, iteration: int, imtype: str, imagename: str = None) -> List[str]:
+    def build_dale_cmd(self, iteration: int, imtype: str) -> List[str]:
         dale = self.config['dale']
-        if imagename is None:
-            imagename = self.get_imagename(iteration)
-
-        # Always use iter0 weight for normalization
-        weightimage = f"{self.get_imagename_base()}_iter0.weight"
+        base = self.get_imagename_base()
+        computepb = 1 if imtype == 'psf' else 0
 
         cmd = [
             "dale",
             "help=noprompt",
-            f"imagename={imagename}",
+            f"imagename={base}",
             f"imtype={imtype}",
             f"pblimit={dale['pblimit']}",
-            f"computepb={1 if dale['computepb'] else 0}"
+            f"computepb={computepb}"
         ]
 
         if imtype in ['residual', 'model']:
-            cmd.append(f"weightimage={weightimage}")
-            cmd.append(f"sowimage={self.get_imagename(0)}.sumwt")
+            cmd.append(f"weightimage={base}.weight")
+            cmd.append(f"sowimage={base}.sumwt")
 
         return cmd
 
-    def build_hummbee_cmd(self, iteration: int) -> List[str]:
+    def build_hummbee_cmd(self, iteration: int = None, mode: str = None) -> List[str]:
         hb = self.config['hummbee']
-        imagename = self.get_imagename(iteration)
-        modelimagename = f"{imagename}.model"
+        base = self.get_imagename_base()
+        imaging_mode = mode if mode is not None else hb['mode']
 
         cmd = [
             "hummbee",
             "help=noprompt",
-            f"imagename={imagename}",
-            f"modelimagename={modelimagename}",
+            f"imagename={base}",
+            f"modelimagename={base}.model",
             f"deconvolver={hb['deconvolver']}",
             f"nterms={hb['nterms']}",
             f"gain={hb['gain']}",
@@ -179,7 +175,7 @@ class ImagingConfig:
             f"cyclefactor={hb['cyclefactor']}",
             f"specmode={hb['specmode']}",
             f"pbcor={1 if hb['pbcor'] else 0}",
-            f"mode={hb['mode']}"
+            f"mode={imaging_mode}"
         ]
 
         if hb['scales']:

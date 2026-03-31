@@ -351,27 +351,7 @@ if __name__ == "__main__":
         cmd = self.config.build_roadrunner_cmd(iteration, mode)
         cmd_str = self._containerize_cmd(cmd, 'gpu')
 
-        # For iter1+ residual mode: copy PSF and weight from iter0
         prep_commands = ""
-        if iteration > 0 and mode == "residual":
-            base_name = self.config.get_imagename_base()
-            iter0_psf = f"{base_name}_iter0.psf"
-            iter0_weight = f"{base_name}_iter0.weight"
-            current_psf = f"{base_name}_iter{iteration}.psf"
-            current_weight = f"{base_name}_iter{iteration}.weight"
-            prep_commands = f"""echo "Copying PSF and weight from iter0..."
-if [ ! -d {iter0_psf} ]; then
-    echo "ERROR: iter0 PSF not found: {iter0_psf}"
-    exit 1
-fi
-if [ ! -d {iter0_weight} ]; then
-    echo "ERROR: iter0 weight not found: {iter0_weight}"
-    exit 1
-fi
-cp -r {iter0_psf} {current_psf}
-cp -r {iter0_weight} {current_weight}
-
-"""
 
         script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{prep_commands}{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
 
@@ -403,7 +383,9 @@ cp -r {iter0_weight} {current_weight}
         dale_model_cmd = self.config.build_dale_cmd(iteration, "model")
         dale_model_str = self._containerize_cmd(dale_model_cmd, 'cpu')
 
-        # Only normalize PSF in iteration 0
+        base_name = self.config.get_imagename_base()
+
+        # PSF normalization and pb generation (iter 0 only)
         psf_normalization = ""
         if iteration == 0:
             dale_psf_cmd = self.config.build_dale_cmd(iteration, "psf")
@@ -413,27 +395,34 @@ cp -r {iter0_weight} {current_weight}
 
 """
 
-        # For iter > 0: copy previous model into current so hummbee accumulates
-        model_accumulate = ""
-        if iteration > 0:
-            base_name = self.config.get_imagename_base()
-            prev_model = f"{base_name}_iter{iteration-1}.model"
-            model_accumulate = f"""echo "Copying iter{iteration-1} model for accumulation..."
-cp -r {prev_model} {imagename}.model
-
+        # Tag cleanup unconditional — dale always sets SubType=Normalized
+        tag_cleanup = f"""echo "Cleaning normalized tag from model..."
+if [ -f {base_name}.model/table.info ]; then
+    echo "Found {base_name}.model/table.info, removing normalized tag..."
+    sed -i 's/SubType.*=.*//g' {base_name}.model/table.info
+else
+    echo "========================================================"
+    echo "WARNING: {base_name}.model/table.info not found"
+    echo "         Tag cleanup skipped — dale may fail next cycle"
+    echo "========================================================"
+fi
 """
 
-        # Clean normalized tag from model so dale can re-normalize next iteration
-        tag_cleanup = ""
-        if iteration > 0:
-            tag_cleanup = f"""echo "Cleaning normalized tag from model..."
-sed -i 's/SubType.*=.*//g' {imagename}.model/table.info
-
+        # Snapshots: residual/model/divmodel every iter; psf/weight/pb iter 0 only
+        snapshots = f"""echo "Snapshotting iter{iteration} images..."
+cp -r {base_name}.residual {base_name}_iter{iteration}.residual
+cp -r {base_name}.model {base_name}_iter{iteration}.model
+cp -r {base_name}.divmodel {base_name}_iter{iteration}.divmodel
+"""
+        if iteration == 0:
+            snapshots += f"""cp -r {base_name}.psf {base_name}_iter0.psf
+cp -r {base_name}.weight {base_name}_iter0.weight
+cp -r {base_name}.pb {base_name}_iter0.pb
 """
 
         script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
 
-{psf_normalization}{model_accumulate}echo "Normalizing residual..."
+{psf_normalization}echo "Normalizing residual..."
 {dale_residual_str}
 
 echo "Running deconvolution..."
@@ -442,7 +431,35 @@ echo "Running deconvolution..."
 echo "Normalizing model (creates .divmodel)..."
 {dale_model_str}
 
-{tag_cleanup}echo "Finished {job_name} at $(date)"
+{tag_cleanup}
+{snapshots}
+echo "Finished {job_name} at $(date)"
+"""
+
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        script_path.chmod(0o755)
+
+        return script_path
+
+    def generate_restore_job(self) -> Path:
+        job_name = "libra_restore"
+        log_file = self.log_dir / f"{job_name}_%j.log"
+        script_path = self.scripts_dir / f"{job_name}.sh"
+
+        header = self._generate_sbatch_header(job_name, 'cpu', str(log_file))
+        env_setup = self._generate_env_setup('cpu')
+
+        hummbee_cmd = self.config.build_hummbee_cmd(mode='restore')
+        hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
+
+        script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
+
+echo "Running restore..."
+{hummbee_str}
+
+echo "Finished {job_name} at $(date)"
 """
 
         script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -596,6 +613,12 @@ echo "Normalizing model (creates .divmodel)..."
             submit_lines.append(f"echo ${cpu_job_var} >> $JOBIDS_FILE")
             submit_lines.append("")
 
+        n_iter = self.config.get_n_iterations()
+        restore_script = self.generate_restore_job()
+        submit_lines.append(f"restore_id=$(sbatch --parsable --dependency=afterok:$iter{n_iter-1}_deconv_id {restore_script})")
+        submit_lines.append('if [ -z "$restore_id" ]; then echo "ERROR: restore job submission failed"; exit 1; fi')
+        submit_lines.append("echo $restore_id >> $JOBIDS_FILE")
+        submit_lines.append("")
         submit_lines.append("echo \"Pipeline submitted successfully\"")
 
         with open(submit_script_path, 'w') as f:
