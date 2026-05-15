@@ -21,6 +21,7 @@ pipeline:
   work_dir: "./pipeline_work"        # Directory for slurm scripts and logs
   validate_paths: true              # Validate binary/data paths (set false for local script generation)
   stage: "full"                      # Pipeline stage: "cf_only", "imaging_only", "full"
+  pipeline_type: "imaging"           # Loop type: "imaging", "peeling"
 
 environment:
   # Singularity container (optional - leave container_image empty to use direct binaries)
@@ -144,6 +145,17 @@ roadrunner:
   pblimit: 0.001                     # Primary beam gain limit
   usepointing: false                 # Use pointing table
   pointingoffsetsigdev: [300, 300]   # Pointing offset sigma (arcsec)
+
+peeling:
+  # Parameters for the peeling loop (only used when pipeline_type: "peeling")
+  imagename_base: "peel_image"       # Base name for peeling-stage images
+  mask: ""                           # CRTF region file defining bright source (required)
+  cfcache: ""                        # CF cache for w-only gridding (separate from roadrunner.cfcache)
+
+  # Gridding overrides for w-only peeling (psterm-only, no A-term)
+  psterm: true
+  aterm: false
+  wbawp: false
 
 dale:
   pblimit: 0.2                       # Primary beam cutoff for normalization

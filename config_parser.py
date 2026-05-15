@@ -137,8 +137,10 @@ class ImagingConfig:
         return cmd
 
     def build_dale_cmd(self, iteration: int, imtype: str) -> List[str]:
+        return self._build_dale_cmd_for_base(self.get_imagename_base(), imtype)
+
+    def _build_dale_cmd_for_base(self, base: str, imtype: str) -> List[str]:
         dale = self.config['dale']
-        base = self.get_imagename_base()
         computepb = 1 if imtype == 'psf' else 0
 
         cmd = [
@@ -190,6 +192,105 @@ class ImagingConfig:
         if hb['mask']:
             cmd.append(f"mask={','.join(hb['mask'])}")
 
+        return cmd
+
+    def get_peeling_imagename_base(self) -> str:
+        return self.config['peeling']['imagename_base']
+
+    def build_roadrunner_peeling_cmd(self, mode: str) -> List[str]:
+        """RoadRunner command for the peeling image -- w-only (psterm=true, aterm=false)."""
+        rr = self.config['roadrunner']
+        peel = self.config['peeling']
+        base = self.get_peeling_imagename_base()
+        imagename = f"{base}.{mode}"
+
+        cmd = [
+            "roadrunner",
+            "help=noprompt",
+            f"vis={self.get_vis()}",
+            f"imagename={imagename}",
+            f"modelimagename=",
+            f"datacolumn={rr['datacolumn']}",
+            f"sowimageext={rr['sowimageext']}",
+            f"complexgrid={rr['complexgrid']}",
+            f"imsize={rr['imsize']}",
+            f"cell={rr['cell']}",
+            f"stokes={rr['stokes']}",
+            f"reffreq={rr['reffreq']}",
+            f"phasecenter={rr['phasecenter']}",
+            f"weighting={rr['weighting']}",
+            f"rmode={rr['rmode']}",
+            f"robust={rr['robust']}",
+            f"wprojplanes={rr['wprojplanes']}",
+            f"gridder={rr['gridder']}",
+            f"cfcache={peel['cfcache']}",
+            f"mode={mode}",
+            f"wbawp=0",
+            f"psterm=1",
+            f"aterm=0",
+            f"field={rr['field']}",
+            f"spw={rr['spw']}",
+            f"uvrange={rr['uvrange']}",
+            f"pbcor=0",
+            f"conjbeams=0",
+            f"pblimit={rr['pblimit']}",
+            f"usepointing={1 if rr['usepointing'] else 0}",
+            f"pointingoffsetsigdev={','.join(map(str, rr['pointingoffsetsigdev']))}",
+        ]
+        return cmd
+
+    def build_roadrunner_predict_cmd(self) -> List[str]:
+        """RoadRunner predict command -- reads peeling divmodel, writes MODEL_DATA."""
+        rr = self.config['roadrunner']
+        peel = self.config['peeling']
+        base = self.get_peeling_imagename_base()
+
+        cmd = [
+            "roadrunner",
+            "help=noprompt",
+            f"vis={self.get_vis()}",
+            f"imagename={base}.residual",
+            f"modelimagename={base}.divmodel",
+            f"datacolumn={rr['datacolumn']}",
+            f"sowimageext=",
+            f"complexgrid=",
+            f"imsize={rr['imsize']}",
+            f"cell={rr['cell']}",
+            f"stokes={rr['stokes']}",
+            f"reffreq={rr['reffreq']}",
+            f"phasecenter={rr['phasecenter']}",
+            f"weighting={rr['weighting']}",
+            f"rmode={rr['rmode']}",
+            f"robust={rr['robust']}",
+            f"wprojplanes={rr['wprojplanes']}",
+            f"gridder={rr['gridder']}",
+            f"cfcache={peel['cfcache']}",
+            f"mode=predict",
+            f"wbawp=0",
+            f"psterm=1",
+            f"aterm=0",
+            f"field={rr['field']}",
+            f"spw={rr['spw']}",
+            f"uvrange={rr['uvrange']}",
+            f"pbcor=0",
+            f"conjbeams=0",
+            f"pblimit={rr['pblimit']}",
+            f"usepointing={1 if rr['usepointing'] else 0}",
+            f"pointingoffsetsigdev={','.join(map(str, rr['pointingoffsetsigdev']))}",
+        ]
+        return cmd
+
+    def build_uvsub_cmd(self) -> List[str]:
+        """UVSub command -- subtracts MODEL_DATA from DATA, writes CORRECTED_DATA."""
+        cmd = [
+            "uvsub",
+            "help=noprompt",
+            f"vis={self.get_vis()}",
+            "datacolumn=data",
+            "modelcolumn=model",
+            "outputcolumn=corrected",
+            "reverse=false",
+        ]
         return cmd
 
     def get_slurm_config(self) -> Dict[str, Any]:

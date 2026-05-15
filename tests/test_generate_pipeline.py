@@ -108,6 +108,18 @@ BASE_CONFIG = {
 }
 
 
+PEELING_EXTRA = {
+    "peeling": {
+        "imagename_base": "peel_image",
+        "mask": "/data/bright_source.crtf",
+        "cfcache": "/data/peel_cfcache",
+        "psterm": True,
+        "aterm": False,
+        "wbawp": False,
+    },
+}
+
+
 def make_generator(tmp_path, overrides=None):
     """Write a config YAML to tmp_path and return a SlurmJobGenerator."""
     cfg = BASE_CONFIG.copy()
@@ -397,3 +409,169 @@ def test_container_binds_are_separate_flags(tmp_path):
     assert "--container_binds /mnt/scratch" in script
     assert "--container_binds /mnt/home" in script
     assert "--container_binds '/mnt/scratch /mnt/home'" not in script
+
+
+# ---------------------------------------------------------------------------
+# Peeling loop tests
+# ---------------------------------------------------------------------------
+
+def make_peeling_generator(tmp_path, extra_overrides=None):
+    """Return a SlurmJobGenerator configured for pipeline_type=peeling."""
+    cfg = yaml.safe_load(yaml.dump(BASE_CONFIG))
+    cfg.update(yaml.safe_load(yaml.dump(PEELING_EXTRA)))
+    cfg["pipeline"]["work_dir"] = str(tmp_path)
+    cfg["pipeline"]["pipeline_type"] = "peeling"
+    cfg["pipeline"]["stage"] = "full"
+
+    if extra_overrides:
+        for key_path, value in extra_overrides.items():
+            parts = key_path.split(".")
+            target = cfg
+            for part in parts[:-1]:
+                target = target[part]
+            target[parts[-1]] = value
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(cfg))
+    return SlurmJobGenerator(ImagingConfig(str(config_path)))
+
+
+def test_peeling_gpu_jobs_use_peeling_cfcache(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    for mode in ["residual", "psf", "weight"]:
+        script = read_script(gen.generate_peeling_gpu_job(mode))
+        assert "cfcache=/data/peel_cfcache" in script
+        assert "cfcache=/data/cfcache" not in script
+
+
+def test_peeling_gpu_jobs_are_w_only(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    for mode in ["residual", "psf", "weight"]:
+        script = read_script(gen.generate_peeling_gpu_job(mode))
+        assert "psterm=1" in script
+        assert "aterm=0" in script
+        assert "wbawp=0" in script
+
+
+def test_peeling_gpu_jobs_use_peeling_imagename(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    for mode in ["residual", "psf", "weight"]:
+        script = read_script(gen.generate_peeling_gpu_job(mode))
+        assert f"imagename=peel_image.{mode}" in script
+        assert "test_image" not in script
+
+
+def test_peeling_cpu_job_uses_peeling_imagename(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_peeling_cpu_job())
+    assert "imagename=peel_image" in script
+    assert "test_image" not in script
+
+
+def test_peeling_cpu_job_injects_crtf_mask(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_peeling_cpu_job())
+    assert "mask=/data/bright_source.crtf" in script
+
+
+def test_peeling_cpu_job_has_psf_normalization(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_peeling_cpu_job())
+    assert "imtype=psf" in script
+    assert "Normalizing PSF" in script
+
+
+def test_peeling_cpu_job_has_tag_cleanup(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_peeling_cpu_job())
+    assert "SubType" in script
+    assert "peel_image.model/table.info" in script
+
+
+def test_predict_job_uses_peeling_divmodel(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_predict_job())
+    assert "modelimagename=peel_image.divmodel" in script
+    assert "mode=predict" in script
+
+
+def test_predict_job_is_w_only(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_predict_job())
+    assert "psterm=1" in script
+    assert "aterm=0" in script
+    assert "wbawp=0" in script
+
+
+def test_uvsub_job_writes_corrected(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    script = read_script(gen.generate_uvsub_job())
+    assert "datacolumn=data" in script
+    assert "modelcolumn=model" in script
+    assert "outputcolumn=corrected" in script
+
+
+def test_peeling_pipeline_dependency_chain(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    gen.generate_full_pipeline()
+    submit = (tmp_path / "submit_pipeline.sh").read_text()
+
+    # Peeling GPU jobs submit first
+    assert "peel_residual_id=$(sbatch" in submit
+    assert "peel_psf_id=$(sbatch" in submit
+    assert "peel_weight_id=$(sbatch" in submit
+
+    # Peeling CPU deconv waits for all three GPU jobs
+    assert "dependency=afterok:$peel_residual_id:$peel_psf_id:$peel_weight_id" in submit
+
+    # Predict waits for peeling deconv
+    assert "dependency=afterok:$peel_deconv_id" in submit
+    assert "peel_predict_id=$(sbatch" in submit
+
+    # UVSub waits for predict
+    assert "dependency=afterok:$peel_predict_id" in submit
+    assert "peel_uvsub_id=$(sbatch" in submit
+
+    # Imaging loop starts after uvsub
+    assert "dependency=afterok:$peel_uvsub_id" in submit
+
+
+def test_peeling_imaging_loop_uses_corrected_datacolumn(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    gen.generate_full_pipeline()
+    scripts_dir = tmp_path / "slurm_scripts"
+    # Only RoadRunner GPU scripts carry datacolumn; CPU deconv scripts do not
+    gpu_scripts = [p for p in scripts_dir.glob("libra_iter*_residual.sh")]
+    assert len(gpu_scripts) > 0, "No imaging GPU scripts found"
+    for script_path in gpu_scripts:
+        script = script_path.read_text()
+        assert "datacolumn=corrected" in script
+
+
+def test_peeling_imaging_phase_recomputes_weight_and_psf(tmp_path):
+    """Imaging phase after peeling must recompute weight and PSF fresh at iteration 0."""
+    gen = make_peeling_generator(tmp_path)
+    gen.generate_full_pipeline()
+    scripts_dir = tmp_path / "slurm_scripts"
+    # weight and psf jobs must exist for the imaging phase (not just the peeling phase)
+    assert (scripts_dir / "libra_iter0_weight.sh").exists()
+    assert (scripts_dir / "libra_iter0_psf.sh").exists()
+    # and they must use the imaging cfcache, not the peeling one
+    for name in ["libra_iter0_weight.sh", "libra_iter0_psf.sh"]:
+        script = (scripts_dir / name).read_text()
+        assert "cfcache=/data/cfcache" in script
+        assert "cfcache=/data/peel_cfcache" not in script
+
+
+def test_peeling_imaging_loop_scripts_exist(tmp_path):
+    gen = make_peeling_generator(tmp_path)
+    gen.generate_full_pipeline()
+    scripts_dir = tmp_path / "slurm_scripts"
+    assert (scripts_dir / "libra_peel_residual.sh").exists()
+    assert (scripts_dir / "libra_peel_psf.sh").exists()
+    assert (scripts_dir / "libra_peel_weight.sh").exists()
+    assert (scripts_dir / "libra_peel_deconv.sh").exists()
+    assert (scripts_dir / "libra_peel_predict.sh").exists()
+    assert (scripts_dir / "libra_peel_uvsub.sh").exists()
+    assert (scripts_dir / "libra_iter0_residual.sh").exists()
+    assert (scripts_dir / "libra_restore.sh").exists()

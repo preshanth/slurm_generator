@@ -482,6 +482,120 @@ echo "Finished {job_name} at $(date)"
 
         return script_path
 
+    def generate_peeling_gpu_job(self, mode: str) -> Path:
+        job_name = f"libra_peel_{mode}"
+        log_file = self.log_dir / f"{job_name}_%j.log"
+        script_path = self.scripts_dir / f"{job_name}.sh"
+
+        header = self._generate_sbatch_header(job_name, 'gpu', str(log_file))
+        env_setup = self._generate_env_setup('gpu')
+        cmd = self.config.build_roadrunner_peeling_cmd(mode)
+        cmd_str = self._containerize_cmd(cmd, 'gpu')
+
+        script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
+
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        script_path.chmod(0o755)
+        return script_path
+
+    def generate_peeling_cpu_job(self) -> Path:
+        job_name = "libra_peel_deconv"
+        log_file = self.log_dir / f"{job_name}_%j.log"
+        script_path = self.scripts_dir / f"{job_name}.sh"
+
+        header = self._generate_sbatch_header(job_name, 'cpu', str(log_file))
+        env_setup = self._generate_env_setup('cpu')
+
+        base_name = self.config.get_peeling_imagename_base()
+
+        dale_psf_str = self._containerize_cmd(
+            self.config._build_dale_cmd_for_base(base_name, "psf"), 'cpu')
+
+        dale_residual_str = self._containerize_cmd(
+            self.config._build_dale_cmd_for_base(base_name, "residual"), 'cpu')
+
+        hummbee_cmd = self.config.build_hummbee_cmd()
+        hummbee_cmd[2] = f"imagename={base_name}"
+        hummbee_cmd[3] = f"modelimagename={base_name}.model"
+        mask = self.config.config['peeling'].get('mask', '')
+        if mask:
+            hummbee_cmd = [arg for arg in hummbee_cmd if not arg.startswith('mask=')]
+            hummbee_cmd.append(f"mask={mask}")
+        hummbee_str = self._containerize_cmd(hummbee_cmd, 'cpu')
+
+        dale_model_str = self._containerize_cmd(
+            self.config._build_dale_cmd_for_base(base_name, "model"), 'cpu')
+
+        tag_cleanup = f"""echo "Cleaning normalized tag from peeling model..."
+if [ -f {base_name}.model/table.info ]; then
+    sed -i 's/SubType.*=.*//g' {base_name}.model/table.info
+else
+    echo "WARNING: {base_name}.model/table.info not found -- tag cleanup skipped"
+fi
+"""
+
+        script_content = f"""{header}{env_setup}echo "Starting {job_name} at $(date)"
+
+echo "Normalizing PSF..."
+{dale_psf_str}
+
+echo "Normalizing residual..."
+{dale_residual_str}
+
+echo "Running deconvolution..."
+{hummbee_str}
+
+echo "Normalizing model (creates .divmodel)..."
+{dale_model_str}
+
+{tag_cleanup}
+echo "Finished {job_name} at $(date)"
+"""
+
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        script_path.chmod(0o755)
+        return script_path
+
+    def generate_predict_job(self) -> Path:
+        job_name = "libra_peel_predict"
+        log_file = self.log_dir / f"{job_name}_%j.log"
+        script_path = self.scripts_dir / f"{job_name}.sh"
+
+        header = self._generate_sbatch_header(job_name, 'gpu', str(log_file))
+        env_setup = self._generate_env_setup('gpu')
+        cmd = self.config.build_roadrunner_predict_cmd()
+        cmd_str = self._containerize_cmd(cmd, 'gpu')
+
+        script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
+
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        script_path.chmod(0o755)
+        return script_path
+
+    def generate_uvsub_job(self) -> Path:
+        job_name = "libra_peel_uvsub"
+        log_file = self.log_dir / f"{job_name}_%j.log"
+        script_path = self.scripts_dir / f"{job_name}.sh"
+
+        header = self._generate_sbatch_header(job_name, 'cpu', str(log_file))
+        env_setup = self._generate_env_setup('cpu')
+        cmd = self.config.build_uvsub_cmd()
+        cmd_str = self._containerize_cmd(cmd, 'cpu')
+
+        script_content = f"{header}{env_setup}echo \"Starting {job_name} at $(date)\"\n{cmd_str}\necho \"Finished {job_name} at $(date)\"\n"
+
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+        script_path.chmod(0o755)
+        return script_path
+
     def generate_restore_job(self) -> Path:
         job_name = "libra_restore"
         log_file = self.log_dir / f"{job_name}_%j.log"
@@ -565,6 +679,91 @@ echo "Finished {job_name} at $(date)"
 
         return mask_path
 
+    def _build_imaging_loop(self, submit_lines: list, initial_dependency: str | None) -> str:
+        """Build the major-cycle imaging loop. Returns the last CPU job ID variable name."""
+        submit_lines.append("# Imaging iterations")
+        for iteration in range(self.config.get_n_iterations()):
+            gpu_job_ids = []
+
+            modes = ["residual", "psf", "weight"] if iteration == 0 else ["residual"]
+
+            for mode in modes:
+                script = self.generate_gpu_job(iteration, mode)
+                job_var = f"iter{iteration}_{mode}_id"
+
+                dep_flag = ""
+                if iteration == 0 and initial_dependency:
+                    dep_flag = f"--dependency=afterok:{initial_dependency}"
+                elif iteration > 0:
+                    dep_flag = f"--dependency=afterok:$iter{iteration-1}_deconv_id"
+
+                submit_lines.append(f"{job_var}=$(sbatch --parsable {dep_flag} {script})")
+                submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
+                submit_lines.append(f"echo ${job_var} >> $JOBIDS_FILE")
+                gpu_job_ids.append(f"${job_var}")
+
+            cpu_script = self.generate_cpu_job(iteration)
+            cpu_job_var = f"iter{iteration}_deconv_id"
+            cpu_dep_str = ":".join(gpu_job_ids)
+            submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable --dependency=afterok:{cpu_dep_str} {cpu_script})")
+            submit_lines.append(f'if [ -z "${cpu_job_var}" ]; then echo "ERROR: {cpu_job_var} submission failed"; exit 1; fi')
+            submit_lines.append(f"echo ${cpu_job_var} >> $JOBIDS_FILE")
+            submit_lines.append("")
+
+        n_iter = self.config.get_n_iterations()
+        return f"iter{n_iter-1}_deconv_id"
+
+    def _build_peeling_loop(self, submit_lines: list, initial_dependency: str | None) -> str:
+        """Build the peeling loop. Returns the last job ID variable name.
+
+        Sequence:
+          1. GPU: RoadRunner residual/psf/weight on peeling image (w-only)
+          2. CPU: Dale + Hummbee (with CRTF mask) + Dale model → .divmodel
+          3. GPU: RoadRunner predict (divmodel → MODEL_DATA)
+          4. CPU: UVSub (DATA - MODEL_DATA → CORRECTED_DATA)
+          5. Imaging loop on corrected data column
+        """
+        submit_lines.append("# Peeling phase")
+
+        # --- GPU: peeling image (residual, psf, weight) ---
+        peel_gpu_ids = []
+        for mode in ["residual", "psf", "weight"]:
+            script = self.generate_peeling_gpu_job(mode)
+            job_var = f"peel_{mode}_id"
+            dep_flag = f"--dependency=afterok:{initial_dependency}" if initial_dependency else ""
+            submit_lines.append(f"{job_var}=$(sbatch --parsable {dep_flag} {script})")
+            submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
+            submit_lines.append(f"echo ${job_var} >> $JOBIDS_FILE")
+            peel_gpu_ids.append(f"${job_var}")
+
+        # --- CPU: deconvolve peeling image ---
+        peel_deconv_script = self.generate_peeling_cpu_job()
+        peel_gpu_dep = ":".join(peel_gpu_ids)
+        submit_lines.append(f"peel_deconv_id=$(sbatch --parsable --dependency=afterok:{peel_gpu_dep} {peel_deconv_script})")
+        submit_lines.append('if [ -z "$peel_deconv_id" ]; then echo "ERROR: peel_deconv_id submission failed"; exit 1; fi')
+        submit_lines.append("echo $peel_deconv_id >> $JOBIDS_FILE")
+        submit_lines.append("")
+
+        # --- GPU: predict divmodel into MODEL_DATA ---
+        predict_script = self.generate_predict_job()
+        submit_lines.append(f"peel_predict_id=$(sbatch --parsable --dependency=afterok:$peel_deconv_id {predict_script})")
+        submit_lines.append('if [ -z "$peel_predict_id" ]; then echo "ERROR: peel_predict_id submission failed"; exit 1; fi')
+        submit_lines.append("echo $peel_predict_id >> $JOBIDS_FILE")
+        submit_lines.append("")
+
+        # --- CPU: UVSub DATA - MODEL_DATA → CORRECTED_DATA ---
+        uvsub_script = self.generate_uvsub_job()
+        submit_lines.append(f"peel_uvsub_id=$(sbatch --parsable --dependency=afterok:$peel_predict_id {uvsub_script})")
+        submit_lines.append('if [ -z "$peel_uvsub_id" ]; then echo "ERROR: peel_uvsub_id submission failed"; exit 1; fi')
+        submit_lines.append("echo $peel_uvsub_id >> $JOBIDS_FILE")
+        submit_lines.append("")
+
+        # --- Imaging loop on corrected data column ---
+        submit_lines.append("# Imaging phase (corrected data after peeling subtraction)")
+        self.config.config['roadrunner']['datacolumn'] = 'corrected'
+        last_job_var = self._build_imaging_loop(submit_lines, "$peel_uvsub_id")
+        return last_job_var
+
     def generate_full_pipeline(self):
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -618,46 +817,22 @@ echo "Finished {job_name} at $(date)"
             self.config.config['hummbee']['mask'].append(str(mask_path))
             print(f"Generated PB mask: {mask_path}")
 
-        # Imaging iterations stage
+        # Dispatch to pipeline-type-specific loop builder
         if stage in ['imaging_only', 'full']:
-            submit_lines.append("# Imaging iterations")
-        for iteration in range(self.config.get_n_iterations()):
-            gpu_job_ids = []
+            pipeline_type = self.config.config['pipeline'].get('pipeline_type', 'imaging')
+            if pipeline_type == 'imaging':
+                last_job_var = self._build_imaging_loop(submit_lines, initial_dependency)
+            elif pipeline_type == 'peeling':
+                last_job_var = self._build_peeling_loop(submit_lines, initial_dependency)
+            else:
+                raise ValueError(f"Unknown pipeline_type: '{pipeline_type}'. Valid values: imaging, peeling")
 
-            # Iteration 0: compute residual, PSF, weight
-            # Iterations 1+: only compute residual (PSF and weight don't change)
-            modes = ["residual", "psf", "weight"] if iteration == 0 else ["residual"]
-
-            for mode in modes:
-                script = self.generate_gpu_job(iteration, mode)
-                job_var = f"iter{iteration}_{mode}_id"
-
-                # Build dependency string for sbatch command
-                dep_flag = ""
-                if iteration == 0 and initial_dependency:
-                    dep_flag = f"--dependency=afterok:{initial_dependency}"
-                elif iteration > 0:
-                    dep_flag = f"--dependency=afterok:$iter{iteration-1}_deconv_id"
-
-                submit_lines.append(f"{job_var}=$(sbatch --parsable {dep_flag} {script})")
-                submit_lines.append(f'if [ -z "${job_var}" ]; then echo "ERROR: {job_var} submission failed"; exit 1; fi')
-                submit_lines.append(f"echo ${job_var} >> $JOBIDS_FILE")
-                gpu_job_ids.append(f"${job_var}")
-
-            cpu_script = self.generate_cpu_job(iteration)
-            cpu_job_var = f"iter{iteration}_deconv_id"
-            cpu_dep_str = ":".join(gpu_job_ids)
-            submit_lines.append(f"{cpu_job_var}=$(sbatch --parsable --dependency=afterok:{cpu_dep_str} {cpu_script})")
-            submit_lines.append(f'if [ -z "${cpu_job_var}" ]; then echo "ERROR: {cpu_job_var} submission failed"; exit 1; fi')
-            submit_lines.append(f"echo ${cpu_job_var} >> $JOBIDS_FILE")
+            restore_script = self.generate_restore_job()
+            submit_lines.append(f"restore_id=$(sbatch --parsable --dependency=afterok:${last_job_var} {restore_script})")
+            submit_lines.append('if [ -z "$restore_id" ]; then echo "ERROR: restore job submission failed"; exit 1; fi')
+            submit_lines.append("echo $restore_id >> $JOBIDS_FILE")
             submit_lines.append("")
 
-        n_iter = self.config.get_n_iterations()
-        restore_script = self.generate_restore_job()
-        submit_lines.append(f"restore_id=$(sbatch --parsable --dependency=afterok:$iter{n_iter-1}_deconv_id {restore_script})")
-        submit_lines.append('if [ -z "$restore_id" ]; then echo "ERROR: restore job submission failed"; exit 1; fi')
-        submit_lines.append("echo $restore_id >> $JOBIDS_FILE")
-        submit_lines.append("")
         submit_lines.append("echo \"Pipeline submitted successfully\"")
 
         with open(submit_script_path, 'w') as f:
